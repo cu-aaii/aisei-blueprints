@@ -18,8 +18,11 @@ is required rather than "'' is too short". Nothing Python-specific survives into
 the property that makes a TypeScript consumer possible: `ajv` and `jsonschema` were measured returning
 identical verdicts on every config in the central repo.
 
-None of the six blueprints has a `Rules:` block today, so their schemas are pure parameter shape. The
-Rules path is exercised by the central repo's own templates, and by the drift test named below.
+Three of the six blueprints have a `Rules:` block, and the compiled form is what the agent reads:
+`alb-ecs-service` (OIDC needs its five endpoints), `apigw-lambda` (a JWT issuer needs an audience) and
+`dynamodb-table` (two — a sort-key type needs a sort key, and an index sort key needs an index
+partition key). Each survives as one entry under `properties.Parameters.allOf`, `$comment`-named. The
+other three have no cross-parameter constraints, so their schemas are pure parameter shape.
 
 This mirrors `deployment/schema/generate.py` in `cu-aaii/aisei-agents`, whose `cfn_params.py` is
 vendored beside this file. That repo's test suite asserts the two produce byte-identical output, so a
