@@ -1,0 +1,32 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The secrets audit reads `git log -p --all`, which a shallow clone does not have.
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      # cfn-lint 1.56 or newer. Older versions ship a stale resource schema and miss real findings --
+      # 1.34 does not know AWS::BedrockAgentCore::Runtime at all.
+      - name: Install tools
+        run: pip install 'cfn-lint>=1.56' pyyaml
+
+      - name: cfn-lint
+        run: cfn-lint blueprints/*/v*/template.yml
+
+      - name: Blueprint structure
+        run: python3 scripts/check_structure.py
+
+      - name: Secrets audit, working tree and history
+        run: python3 scripts/audit_secrets.py --history

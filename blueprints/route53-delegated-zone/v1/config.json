@@ -1,0 +1,14 @@
+{
+    "Parameters": {
+        "Application": "",
+        "Subdomain": "",
+        "ParentHostedZoneId": "/CHANGE-ME/hosted-zone-id",
+        "ParentDomainName": "/CHANGE-ME/hosted-zone-domain",
+        "DelegationTtlSeconds": "300"
+    },
+    "Tags": {
+        "Application": "",
+        "Resource": "cloudformation-stack-route53-delegated-zone",
+        "Cost Center": "none"
+    }
+}

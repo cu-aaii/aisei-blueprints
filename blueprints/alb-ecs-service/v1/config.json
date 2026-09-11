@@ -1,0 +1,26 @@
+{
+    "Parameters": {
+        "Application": "",
+        "ServiceName": "",
+        "ServiceEnvironment": "",
+        "ServiceImageUri": "",
+        "ServicePort": "8080",
+        "ServiceHealthCheckPath": "/health",
+        "TaskCpu": "1024",
+        "TaskMemory": "2048",
+        "DesiredCount": "1",
+        "EnableIpv6": "true",
+        "LogRetentionDays": "30",
+        "UseOidc": "true",
+        "OidcAuthorizationEndpoint": "",
+        "OidcClientId": "",
+        "OidcIssuer": "",
+        "OidcTokenEndpoint": "",
+        "OidcUserInfoEndpoint": ""
+    },
+    "Tags": {
+        "Application": "",
+        "Resource": "cloudformation-stack-alb-ecs-service",
+        "Cost Center": "none"
+    }
+}

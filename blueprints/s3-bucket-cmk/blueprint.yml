@@ -1,0 +1,17 @@
+name: 's3-bucket-cmk'
+summary: >-
+  One private S3 bucket encrypted with the workspace CMK, public access blocked, ACLs disabled, TLS
+  required, versioned, with a lifecycle policy that expires old versions and abandoned uploads.
+category: 'storage'
+
+versions:
+  - version: 'v1'
+    status: 'current'
+    released: '2026-09-11'
+    notes: >-
+      First version. Optional access-log bucket, optional Standard-IA transition, optional single
+      named principal in the bucket policy. No Object Lock, no replication, no event notifications,
+      no CloudFront origin access control.
+    replaces_resources_on_update: true
+    replacement_triggers:
+      - 'BucketPurpose'

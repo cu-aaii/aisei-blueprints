@@ -1,0 +1,23 @@
+{
+    "Parameters": {
+        "Application": "",
+        "TableName": "",
+        "PartitionKeyName": "",
+        "PartitionKeyType": "S",
+        "SortKeyName": "",
+        "SortKeyType": "S",
+        "BillingMode": "PAY_PER_REQUEST",
+        "ReadCapacityUnits": "5",
+        "WriteCapacityUnits": "5",
+        "EnablePointInTimeRecovery": "true",
+        "TimeToLiveAttributeName": "",
+        "IndexPartitionKeyName": "",
+        "IndexSortKeyName": "",
+        "KmsKeyArn": "/CHANGE-ME/kms-key-arn"
+    },
+    "Tags": {
+        "Application": "",
+        "Resource": "cloudformation-stack-dynamodb-table",
+        "Cost Center": "none"
+    }
+}

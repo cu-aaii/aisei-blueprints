@@ -1,0 +1,692 @@
+AWSTemplateFormatVersion: '2010-09-09'
+
+Description: >-
+  alb-ecs-service v1 — one long-running container behind its own internet-facing Application Load
+  Balancer: Fargate task on the workspace ECS cluster in the private subnets, HTTPS listener with the
+  workspace wildcard certificate, an A record, WAF, and optional OIDC authentication at the edge.
+
+Metadata:
+  Blueprint:
+    Name: 'alb-ecs-service'
+    Version: 'v1'
+
+  'AWS::CloudFormation::Interface':
+    ParameterGroups:
+      - Label:
+          default: 'Naming'
+        Parameters:
+          - 'Application'
+          - 'ServiceName'
+          - 'ServiceEnvironment'
+      - Label:
+          default: 'Container'
+        Parameters:
+          - 'ServiceImageUri'
+          - 'ServicePort'
+          - 'ServiceHealthCheckPath'
+          - 'TaskCpu'
+          - 'TaskMemory'
+          - 'DesiredCount'
+      - Label:
+          default: 'Edge'
+        Parameters:
+          - 'EnableIpv6'
+          - 'LogRetentionDays'
+      - Label:
+          default: 'Authentication — all five Oidc* are required when UseOidc is true'
+        Parameters:
+          - 'UseOidc'
+          - 'OidcAuthorizationEndpoint'
+          - 'OidcClientId'
+          - 'OidcIssuer'
+          - 'OidcTokenEndpoint'
+          - 'OidcUserInfoEndpoint'
+
+Parameters:
+  Application:
+    Type: 'String'
+    Description: 'The workspace name — first segment of every SSM path, and the Application tag value.'
+    AllowedPattern: '[a-z0-9]{2,10}'
+    ConstraintDescription: 'two to ten lowercase letters or digits'
+
+  ServiceName:
+    Type: 'String'
+    Description: >-
+      Service name, unqualified. Appears in the hostname, the ECS service name, the container name and
+      the Service Connect discovery name.
+    AllowedPattern: '[a-z0-9-]{1,20}'
+    ConstraintDescription: 'lowercase letters, digits and hyphens, at most 20 characters'
+
+  ServiceEnvironment:
+    Type: 'String'
+    Description: >-
+      Environment name — a configuration directory, not a git branch. Appears in the hostname.
+    AllowedPattern: '[a-z0-9-]{1,12}'
+    ConstraintDescription: 'lowercase letters, digits and hyphens, at most 12 characters'
+
+  ServiceImageUri:
+    Type: 'String'
+    Description: >-
+      Full image reference. Pin by digest — repo@sha256:… — so a redeploy of the same stack cannot
+      quietly pick up a different image. A moving tag makes the stack a lie about what is running.
+    AllowedPattern: '.+'
+    ConstraintDescription: 'a full image reference; pin by digest where possible'
+
+  ServicePort:
+    Type: 'Number'
+    Description: 'The TCP port the container listens on.'
+    Default: 8080
+    MinValue: 1
+    MaxValue: 65535
+
+  ServiceHealthCheckPath:
+    Type: 'String'
+    Description: >-
+      HTTP path returning 200 when healthy. Used by both the target group and the container health
+      check. It must answer before authentication — the ALB health check does not carry an OIDC
+      session, so a path behind the app's own login redirect never passes.
+    Default: '/health'
+    AllowedPattern: '^/.*'
+
+  TaskCpu:
+    Type: 'Number'
+    Description: >-
+      Fargate CPU units. Only certain CPU/memory pairs are valid; 1024 CPU accepts 2048 to 8192 memory.
+      An invalid pair fails at task registration, not at template validation.
+    Default: 1024
+    AllowedValues: [256, 512, 1024, 2048, 4096]
+
+  TaskMemory:
+    Type: 'Number'
+    Description: 'Fargate memory in MiB. Must be a legal pairing with TaskCpu.'
+    Default: 2048
+    MinValue: 512
+    MaxValue: 30720
+
+  DesiredCount:
+    Type: 'Number'
+    Description: >-
+      Task count. 1 means a deployment has a gap unless the deployment configuration overlaps, and a
+      single AZ failure takes the service down. 2 is the first number that is actually available.
+    Default: 1
+    MinValue: 0
+    MaxValue: 10
+
+  EnableIpv6:
+    Type: 'String'
+    Description: >-
+      Dualstack ALB plus an AAAA record. Must be false when the workspace publishes
+      /<workspace>/vpc-ipv6-cidr-blocks = none — CloudFormation cannot read an SSM value inside a
+      Condition, so this is an explicit input rather than something the template can infer.
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+
+  LogRetentionDays:
+    Type: 'Number'
+    Description: 'CloudWatch Logs retention. Never leave a log group unbounded.'
+    Default: 30
+    AllowedValues: [1, 3, 5, 7, 14, 30, 60, 90, 180, 365, 400, 545, 731]
+
+  UseOidc:
+    Type: 'String'
+    Description: >-
+      Authenticate every request at the ALB before it reaches the container. This is authentication
+      only — it proves who the caller is and nothing about whether they are allowed in. Real
+      authorization is the application's job.
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+
+  OidcAuthorizationEndpoint:
+    Type: 'String'
+    Description: 'Ignored when UseOidc is false.'
+    Default: ''
+
+  OidcClientId:
+    Type: 'String'
+    Description: 'Ignored when UseOidc is false.'
+    Default: ''
+
+  OidcIssuer:
+    Type: 'String'
+    Description: 'Ignored when UseOidc is false.'
+    Default: ''
+
+  OidcTokenEndpoint:
+    Type: 'String'
+    Description: 'Ignored when UseOidc is false.'
+    Default: ''
+
+  OidcUserInfoEndpoint:
+    Type: 'String'
+    Description: 'Ignored when UseOidc is false.'
+    Default: ''
+
+Rules:
+  # A change set does NOT evaluate Rules -- they fire on create, update and change-set execution.
+  OidcParametersRequired:
+    RuleCondition: !Equals [!Ref 'UseOidc', 'true']
+    Assertions:
+      - Assert: !Not [!Equals [!Ref 'OidcAuthorizationEndpoint', '']]
+        AssertDescription: 'OidcAuthorizationEndpoint is required when UseOidc is true'
+      - Assert: !Not [!Equals [!Ref 'OidcClientId', '']]
+        AssertDescription: 'OidcClientId is required when UseOidc is true'
+      - Assert: !Not [!Equals [!Ref 'OidcIssuer', '']]
+        AssertDescription: 'OidcIssuer is required when UseOidc is true'
+      - Assert: !Not [!Equals [!Ref 'OidcTokenEndpoint', '']]
+        AssertDescription: 'OidcTokenEndpoint is required when UseOidc is true'
+      - Assert: !Not [!Equals [!Ref 'OidcUserInfoEndpoint', '']]
+        AssertDescription: 'OidcUserInfoEndpoint is required when UseOidc is true'
+
+Conditions:
+  UseOidc: !Equals [!Ref 'UseOidc', 'true']
+  EnableIpv6: !Equals [!Ref 'EnableIpv6', 'true']
+
+Resources:
+  # ---------------------------------------------------------------------------------------------
+  # Security groups. The ALB group is the only thing open to the internet; the task group accepts
+  # traffic from the ALB group and from nothing else, by group reference rather than by CIDR.
+  # ---------------------------------------------------------------------------------------------
+
+  ServiceSecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: !Sub 'Task security group for ${Application}-${ServiceName}-${ServiceEnvironment}'
+      VpcId: !Sub '{{resolve:ssm:/${Application}/vpc-id}}'
+      Tags:
+        - Key: 'Application'
+          Value: !Ref 'Application'
+        - Key: 'Service'
+          Value: !Ref 'ServiceName'
+        - Key: 'Environment'
+          Value: !Ref 'ServiceEnvironment'
+        - Key: 'Resource'
+          Value: 'security-group'
+
+  AlbSecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: !Sub 'ALB security group for ${Application}-${ServiceName}-${ServiceEnvironment}'
+      VpcId: !Sub '{{resolve:ssm:/${Application}/vpc-id}}'
+      SecurityGroupIngress:
+        - CidrIp: '0.0.0.0/0'
+          IpProtocol: 'tcp'
+          FromPort: 80
+          ToPort: 80
+          Description: 'Redirected to HTTPS by the listener'
+        - CidrIpv6: '::/0'
+          IpProtocol: 'tcp'
+          FromPort: 80
+          ToPort: 80
+          Description: 'Redirected to HTTPS by the listener'
+        - CidrIp: '0.0.0.0/0'
+          IpProtocol: 'tcp'
+          FromPort: 443
+          ToPort: 443
+          Description: 'Public HTTPS'
+        - CidrIpv6: '::/0'
+          IpProtocol: 'tcp'
+          FromPort: 443
+          ToPort: 443
+          Description: 'Public HTTPS'
+      SecurityGroupEgress:
+        - IpProtocol: 'tcp'
+          FromPort: !Ref 'ServicePort'
+          ToPort: !Ref 'ServicePort'
+          DestinationSecurityGroupId: !Ref 'ServiceSecurityGroup'
+          Description: 'To the task only'
+        - CidrIp: '0.0.0.0/0'
+          IpProtocol: 'tcp'
+          FromPort: 443
+          ToPort: 443
+          Description: 'To the OIDC provider token and userinfo endpoints'
+      Tags:
+        - Key: 'Application'
+          Value: !Ref 'Application'
+        - Key: 'Service'
+          Value: !Ref 'ServiceName'
+        - Key: 'Environment'
+          Value: !Ref 'ServiceEnvironment'
+        - Key: 'Resource'
+          Value: 'security-group-alb'
+
+  ServiceSecurityGroupAlbIngress:
+    Type: 'AWS::EC2::SecurityGroupIngress'
+    Properties:
+      GroupId: !Ref 'ServiceSecurityGroup'
+      IpProtocol: 'tcp'
+      FromPort: !Ref 'ServicePort'
+      ToPort: !Ref 'ServicePort'
+      SourceSecurityGroupId: !Ref 'AlbSecurityGroup'
+      Description: 'From the ALB'
+
+  # ---------------------------------------------------------------------------------------------
+  # ALB. No explicit Name: ${Application}-${ServiceName}-${ServiceEnvironment}-alb can reach 48
+  # characters against ELB's 32. Find it by tag or through the stack's resources.
+  # ---------------------------------------------------------------------------------------------
+
+  Alb:
+    Type: 'AWS::ElasticLoadBalancingV2::LoadBalancer'
+    Properties:
+      IpAddressType: !If ['EnableIpv6', 'dualstack', 'ipv4']
+      Scheme: 'internet-facing'
+      Type: 'application'
+      SecurityGroups:
+        - !Ref 'AlbSecurityGroup'
+      Subnets:
+        - !Sub '{{resolve:ssm:/${Application}/subnet-core-public-a}}'
+        - !Sub '{{resolve:ssm:/${Application}/subnet-core-public-b}}'
+      LoadBalancerAttributes:
+        - Key: 'deletion_protection.enabled'
+          Value: 'true'
+        - Key: 'routing.http.desync_mitigation_mode'
+          Value: 'defensive'
+        - Key: 'routing.http.drop_invalid_header_fields.enabled'
+          Value: 'true'
+        - Key: 'routing.http.x_amzn_tls_version_and_cipher_suite.enabled'
+          Value: 'true'
+        - Key: 'routing.http2.enabled'
+          Value: 'true'
+        # fail_open false: if WAF is unreachable the ALB rejects rather than passing traffic
+        # through unexamined.
+        - Key: 'waf.fail_open.enabled'
+          Value: 'false'
+      Tags:
+        - Key: 'Application'
+          Value: !Ref 'Application'
+        - Key: 'Service'
+          Value: !Ref 'ServiceName'
+        - Key: 'Environment'
+          Value: !Ref 'ServiceEnvironment'
+        - Key: 'Resource'
+          Value: 'alb'
+
+  HttpListener:
+    Type: 'AWS::ElasticLoadBalancingV2::Listener'
+    Properties:
+      LoadBalancerArn: !Ref 'Alb'
+      Port: 80
+      Protocol: 'HTTP'
+      DefaultActions:
+        - Type: 'redirect'
+          RedirectConfig:
+            Host: '#{host}'
+            Path: '/#{path}'
+            Port: '443'
+            Protocol: 'HTTPS'
+            Query: '#{query}'
+            StatusCode: 'HTTP_301'
+
+  # The default action is a 401, not a forward: anything that does not match the host-header rule
+  # below gets refused rather than reaching the container. A direct hit on the ALB's own
+  # *.elb.amazonaws.com name is the case that matters.
+  HttpsListener:
+    Type: 'AWS::ElasticLoadBalancingV2::Listener'
+    Properties:
+      LoadBalancerArn: !Ref 'Alb'
+      Port: 443
+      Protocol: 'HTTPS'
+      SslPolicy: 'ELBSecurityPolicy-TLS13-1-2-2021-06'
+      Certificates:
+        - CertificateArn: !Sub '{{resolve:ssm:/${Application}/domain-wildcard-certificate-arn}}'
+      DefaultActions:
+        - Type: 'fixed-response'
+          FixedResponseConfig:
+            ContentType: 'application/json'
+            MessageBody: '{"error": "Unauthorized"}'
+            StatusCode: '401'
+
+  WafAssociation:
+    Type: 'AWS::WAFv2::WebACLAssociation'
+    Properties:
+      ResourceArn: !Ref 'Alb'
+      WebACLArn: !Sub '{{resolve:ssm:/${Application}/basic-waf-arn}}'
+
+  # No explicit Name: the qualified name can reach 44 characters against ELB's 32 for target groups.
+  TargetGroup:
+    Type: 'AWS::ElasticLoadBalancingV2::TargetGroup'
+    Properties:
+      VpcId: !Sub '{{resolve:ssm:/${Application}/vpc-id}}'
+      Port: !Ref 'ServicePort'
+      Protocol: 'HTTP'
+      ProtocolVersion: 'HTTP1'
+      TargetType: 'ip'
+      IpAddressType: 'ipv4'
+      HealthCheckEnabled: true
+      HealthCheckPath: !Ref 'ServiceHealthCheckPath'
+      HealthCheckPort: 'traffic-port'
+      HealthCheckProtocol: 'HTTP'
+      HealthCheckIntervalSeconds: 30
+      HealthCheckTimeoutSeconds: 10
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 2
+      Matcher:
+        HttpCode: '200'
+      TargetGroupAttributes:
+        - Key: 'deregistration_delay.timeout_seconds'
+          Value: '60'
+        - Key: 'load_balancing.algorithm.type'
+          Value: 'round_robin'
+      Tags:
+        - Key: 'Application'
+          Value: !Ref 'Application'
+        - Key: 'Service'
+          Value: !Ref 'ServiceName'
+        - Key: 'Environment'
+          Value: !Ref 'ServiceEnvironment'
+        - Key: 'Resource'
+          Value: 'alb-target-group'
+
+  ListenerRule:
+    Type: 'AWS::ElasticLoadBalancingV2::ListenerRule'
+    Properties:
+      ListenerArn: !GetAtt 'HttpsListener.ListenerArn'
+      Priority: 100
+      Actions: !If
+        - 'UseOidc'
+        - - Order: 50
+            Type: 'authenticate-oidc'
+            AuthenticateOidcConfig:
+              AuthorizationEndpoint: !Ref 'OidcAuthorizationEndpoint'
+              ClientId: !Ref 'OidcClientId'
+              # Secrets Manager, NOT {{resolve:ssm-secure:}}. AWS resolves ssm-secure for an
+              # eleven-property allowlist only (RDS MasterUserPassword, IAM LoginProfile Password,
+              # ElastiCache AuthToken, ...) and ListenerRule is not on it: the reference would
+              # deploy as its own literal text, the stack would reach CREATE_COMPLETE, and every
+              # login would fail at the IdP token exchange with invalid_client. cfn-lint's E1027
+              # encodes the same allowlist but only fires on a bare string, so wrapping it in
+              # Fn::Sub hides it. secretsmanager resolves in any resource property.
+              ClientSecret: !Sub '{{resolve:secretsmanager:${Application}-${ServiceName}-${ServiceEnvironment}-oidc-client-secret:SecretString:client_secret}}'
+              Issuer: !Ref 'OidcIssuer'
+              OnUnauthenticatedRequest: 'authenticate'
+              Scope: 'openid email profile'
+              SessionCookieName: !Sub '${ServiceName}-session'
+              SessionTimeout: 3600
+              TokenEndpoint: !Ref 'OidcTokenEndpoint'
+              UserInfoEndpoint: !Ref 'OidcUserInfoEndpoint'
+          - Order: 100
+            Type: 'forward'
+            TargetGroupArn: !Ref 'TargetGroup'
+        - - Order: 100
+            Type: 'forward'
+            TargetGroupArn: !Ref 'TargetGroup'
+      Conditions:
+        - Field: 'host-header'
+          HostHeaderConfig:
+            Values:
+              - !Sub
+                - '${ServiceName}-${ServiceEnvironment}.${HostedZoneDomain}'
+                - HostedZoneDomain: !Sub '{{resolve:ssm:/${Application}/hosted-zone-domain}}'
+
+  RecordSets:
+    Type: 'AWS::Route53::RecordSetGroup'
+    Properties:
+      HostedZoneId: !Sub '{{resolve:ssm:/${Application}/hosted-zone-id}}'
+      RecordSets:
+        - Name: !Sub
+            - '${ServiceName}-${ServiceEnvironment}.${HostedZoneDomain}'
+            - HostedZoneDomain: !Sub '{{resolve:ssm:/${Application}/hosted-zone-domain}}'
+          Type: 'A'
+          AliasTarget:
+            DNSName: !GetAtt 'Alb.DNSName'
+            HostedZoneId: !GetAtt 'Alb.CanonicalHostedZoneID'
+        - !If
+          - 'EnableIpv6'
+          - Name: !Sub
+              - '${ServiceName}-${ServiceEnvironment}.${HostedZoneDomain}'
+              - HostedZoneDomain: !Sub '{{resolve:ssm:/${Application}/hosted-zone-domain}}'
+            Type: 'AAAA'
+            AliasTarget:
+              DNSName: !GetAtt 'Alb.DNSName'
+              HostedZoneId: !GetAtt 'Alb.CanonicalHostedZoneID'
+          - !Ref 'AWS::NoValue'
+
+  # ---------------------------------------------------------------------------------------------
+  # Task. Two roles, deliberately: the execution role is what Fargate's agent uses to pull the
+  # image and write logs before the container exists; the task role is what the application code
+  # gets. Merging them hands application code the right to read every secret the puller can.
+  # ---------------------------------------------------------------------------------------------
+
+  LogGroup:
+    Type: 'AWS::Logs::LogGroup'
+    Properties:
+      LogGroupName: !Sub '/aws/ecs/${Application}/${ServiceName}/${ServiceEnvironment}'
+      RetentionInDays: !Ref 'LogRetentionDays'
+      KmsKeyId: !Sub '{{resolve:ssm:/${Application}/kms-key-arn}}'
+
+  # No explicit RoleName on either role: the qualified name can reach 74 characters against IAM's 64.
+  TaskExecutionRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: 'Allow'
+            Principal:
+              Service: 'ecs-tasks.amazonaws.com'
+            Action: 'sts:AssumeRole'
+            Condition:
+              StringEquals:
+                'aws:SourceAccount': !Ref 'AWS::AccountId'
+      ManagedPolicyArns:
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy'
+      Policies:
+        - PolicyName: 'logs-and-secrets'
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: 'Allow'
+                Action:
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'
+                Resource: !GetAtt 'LogGroup.Arn'
+              # Scoped to this service's own SecureString prefix, so a task cannot read another
+              # service's secrets even inside the same workspace.
+              - Effect: 'Allow'
+                Action:
+                  - 'ssm:GetParameters'
+                Resource: !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${Application}/service/${ServiceName}/${ServiceEnvironment}/*'
+              - Effect: 'Allow'
+                Action:
+                  - 'kms:Decrypt'
+                Resource: !Sub '{{resolve:ssm:/${Application}/kms-key-arn}}'
+      Tags:
+        - Key: 'Application'
+          Value: !Ref 'Application'
+        - Key: 'Service'
+          Value: !Ref 'ServiceName'
+        - Key: 'Environment'
+          Value: !Ref 'ServiceEnvironment'
+        - Key: 'Resource'
+          Value: 'iam-role-task-execution'
+
+  # Starts with nothing but the ECS Exec channel. Every application permission is an explicit
+  # addition -- a task role that begins broad never gets narrowed.
+  TaskRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: 'Allow'
+            Principal:
+              Service: 'ecs-tasks.amazonaws.com'
+            Action: 'sts:AssumeRole'
+            Condition:
+              StringEquals:
+                'aws:SourceAccount': !Ref 'AWS::AccountId'
+      Policies:
+        - PolicyName: 'ecs-exec'
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: 'Allow'
+                Action:
+                  - 'ssmmessages:CreateControlChannel'
+                  - 'ssmmessages:CreateDataChannel'
+                  - 'ssmmessages:OpenControlChannel'
+                  - 'ssmmessages:OpenDataChannel'
+                Resource: '*'
+      Tags:
+        - Key: 'Application'
+          Value: !Ref 'Application'
+        - Key: 'Service'
+          Value: !Ref 'ServiceName'
+        - Key: 'Environment'
+          Value: !Ref 'ServiceEnvironment'
+        - Key: 'Resource'
+          Value: 'iam-role-task'
+
+  TaskDefinition:
+    Type: 'AWS::ECS::TaskDefinition'
+    Properties:
+      Family: !Sub '${Application}-${ServiceName}-${ServiceEnvironment}'
+      Cpu: !Ref 'TaskCpu'
+      Memory: !Ref 'TaskMemory'
+      NetworkMode: 'awsvpc'
+      # Required. Without it ECS defaults the compatibility list to EC2, and a FARGATE-only
+      # cluster then refuses to place the task -- 'task definition does not support launch type
+      # FARGATE'. cfn-lint does not catch this.
+      RequiresCompatibilities:
+        - 'FARGATE'
+      ExecutionRoleArn: !GetAtt 'TaskExecutionRole.Arn'
+      TaskRoleArn: !GetAtt 'TaskRole.Arn'
+      RuntimePlatform:
+        CpuArchitecture: 'X86_64'
+        OperatingSystemFamily: 'LINUX'
+      ContainerDefinitions:
+        - Name: !Ref 'ServiceName'
+          Image: !Ref 'ServiceImageUri'
+          Essential: true
+          Interactive: false
+          PseudoTerminal: false
+          # Left writable because most images write to /tmp or a cache directory at start-up.
+          # Set true if the image is known to run read-only; it is the cheaper hardening.
+          ReadonlyRootFilesystem: false
+          Environment:
+            - Name: 'AWS_REGION'
+              Value: !Ref 'AWS::Region'
+            - Name: 'AWS_DEFAULT_REGION'
+              Value: !Ref 'AWS::Region'
+            - Name: 'APPLICATION'
+              Value: !Ref 'Application'
+            - Name: 'SERVICE_NAME'
+              Value: !Ref 'ServiceName'
+            - Name: 'ENVIRONMENT'
+              Value: !Ref 'ServiceEnvironment'
+            - Name: 'PORT'
+              Value: !Ref 'ServicePort'
+          # Secrets are injected by reference, never by value. Add one entry per secret; the
+          # execution role above can already read this prefix:
+          #
+          # Secrets:
+          #   - Name: 'CHANGE-ME'
+          #     ValueFrom: !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${Application}/service/${ServiceName}/${ServiceEnvironment}/CHANGE-ME'
+          PortMappings:
+            - Name: !Ref 'ServiceName'
+              ContainerPort: !Ref 'ServicePort'
+              HostPort: !Ref 'ServicePort'
+              Protocol: 'tcp'
+          HealthCheck:
+            Command:
+              - 'CMD-SHELL'
+              - !Sub 'wget --spider --tries=1 --timeout=10 http://localhost:${ServicePort}${ServiceHealthCheckPath} || exit 1'
+            Interval: 30
+            Retries: 3
+            StartPeriod: 60
+            Timeout: 5
+          LogConfiguration:
+            LogDriver: 'awslogs'
+            Options:
+              awslogs-region: !Ref 'AWS::Region'
+              awslogs-group: !Ref 'LogGroup'
+              awslogs-stream-prefix: !Ref 'ServiceName'
+      Tags:
+        - Key: 'Application'
+          Value: !Ref 'Application'
+        - Key: 'Service'
+          Value: !Ref 'ServiceName'
+        - Key: 'Environment'
+          Value: !Ref 'ServiceEnvironment'
+        - Key: 'Resource'
+          Value: 'ecs-task-definition'
+
+  Service:
+    Type: 'AWS::ECS::Service'
+    # Without this the service can be created before the listener rule exists, and the target
+    # group registration then has nothing routing to it.
+    DependsOn:
+      - 'ListenerRule'
+    Properties:
+      ServiceName: !Sub '${Application}-${ServiceName}-${ServiceEnvironment}'
+      Cluster: !Sub '{{resolve:ssm:/${Application}/ecs-cluster-name}}'
+      DesiredCount: !Ref 'DesiredCount'
+      TaskDefinition: !Ref 'TaskDefinition'
+      EnableECSManagedTags: true
+      EnableExecuteCommand: true
+      HealthCheckGracePeriodSeconds: 60
+      PropagateTags: 'SERVICE'
+      SchedulingStrategy: 'REPLICA'
+      DeploymentController:
+        Type: 'ECS'
+      # Without this an unhealthy image sits in UPDATE_IN_PROGRESS until the stack times out
+      # (hours); with it the deployment fails in minutes and ECS puts the previous task set back.
+      # Rollback only works because the previous image is still in ECR -- do not combine it with a
+      # lifecycle rule that expires the running image.
+      DeploymentConfiguration:
+        DeploymentCircuitBreaker:
+          Enable: true
+          Rollback: true
+      LoadBalancers:
+        - ContainerName: !Ref 'ServiceName'
+          ContainerPort: !Ref 'ServicePort'
+          TargetGroupArn: !Ref 'TargetGroup'
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: 'DISABLED'
+          SecurityGroups:
+            - !Ref 'ServiceSecurityGroup'
+          Subnets:
+            - !Sub '{{resolve:ssm:/${Application}/subnet-core-private-a}}'
+            - !Sub '{{resolve:ssm:/${Application}/subnet-core-private-b}}'
+      Tags:
+        - Key: 'Application'
+          Value: !Ref 'Application'
+        - Key: 'Service'
+          Value: !Ref 'ServiceName'
+        - Key: 'Environment'
+          Value: !Ref 'ServiceEnvironment'
+        - Key: 'Resource'
+          Value: 'ecs-service'
+
+Outputs:
+  ServiceUrl:
+    Description: 'The public URL of the service'
+    Value: !Sub
+      - 'https://${ServiceName}-${ServiceEnvironment}.${HostedZoneDomain}'
+      - HostedZoneDomain: !Sub '{{resolve:ssm:/${Application}/hosted-zone-domain}}'
+
+  AlbDnsName:
+    Description: >-
+      The ALB name itself. Useful for debugging; note a request straight to it gets a 401 from the
+      listener default action, because it does not match the host-header rule.
+    Value: !GetAtt 'Alb.DNSName'
+
+  ServiceSecurityGroupId:
+    Description: >-
+      The task security group. This is what a datastore blueprint grants ingress from — for example
+      the SecurityGroupId output of postgres-aurora-serverless.
+    Value: !GetAtt 'ServiceSecurityGroup.GroupId'
+    Export:
+      Name: !Sub '${AWS::StackName}-service-security-group-id'
+
+  TaskRoleArn:
+    Description: >-
+      The task role, which starts with ECS Exec and nothing else. Attach application permissions to
+      this, not to the execution role.
+    Value: !GetAtt 'TaskRole.Arn'
+    Export:
+      Name: !Sub '${AWS::StackName}-task-role-arn'
+
+  LogGroupName:
+    Description: 'CloudWatch log group for the container'
+    Value: !Ref 'LogGroup'

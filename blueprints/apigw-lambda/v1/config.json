@@ -1,0 +1,23 @@
+{
+    "Parameters": {
+        "Application": "",
+        "FunctionName": "",
+        "ServiceEnvironment": "",
+        "ImageUri": "",
+        "MemorySizeMb": "512",
+        "TimeoutSeconds": "30",
+        "ReservedConcurrency": "10",
+        "AttachToVpc": "false",
+        "ThrottlingBurstLimit": "200",
+        "ThrottlingRateLimit": "100",
+        "CorsAllowOrigin": "",
+        "LogRetentionDays": "30",
+        "JwtIssuer": "",
+        "JwtAudience": ""
+    },
+    "Tags": {
+        "Application": "",
+        "Resource": "cloudformation-stack-apigw-lambda",
+        "Cost Center": "none"
+    }
+}

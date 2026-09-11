@@ -1,0 +1,17 @@
+name: 'alb-ecs-service'
+summary: >-
+  One long-running container on Fargate behind its own internet-facing ALB, with HTTPS, a DNS record,
+  WAF and optional OIDC authentication at the edge.
+category: 'compute'
+compare_with:
+  - 'apigw-lambda'
+
+versions:
+  - version: 'v1'
+    status: 'current'
+    released: '2026-09-11'
+    notes: >-
+      First version. Extracted from the platform's services/_template/service-stack.yml, which fuses
+      this with an EFS pair, a configuration bucket and an alternate-hostname certificate — those stay
+      in the platform template. One ALB per service, no shared listener; no autoscaling; no EFS.
+    replaces_resources_on_update: false

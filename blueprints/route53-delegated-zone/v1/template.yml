@@ -1,0 +1,117 @@
+AWSTemplateFormatVersion: '2010-09-09'
+
+Description: >-
+  route53-delegated-zone v1 — a Route 53 public hosted zone for a subdomain, plus the NS delegation
+  record written into the parent zone. Both halves in one stack, because a zone without its delegation
+  resolves for nobody and is the single most common way this goes wrong.
+
+Metadata:
+  Blueprint:
+    Name: 'route53-delegated-zone'
+    Version: 'v1'
+
+  'AWS::CloudFormation::Interface':
+    ParameterGroups:
+      - Label:
+          default: 'Naming'
+        Parameters:
+          - 'Application'
+          - 'Subdomain'
+      - Label:
+          default: 'Parent zone'
+        Parameters:
+          - 'ParentHostedZoneId'
+          - 'ParentDomainName'
+          - 'DelegationTtlSeconds'
+
+Parameters:
+  Application:
+    Type: 'String'
+    Description: >-
+      The workspace name. First segment of every SSM parameter path this blueprint reads, and the
+      value of the Application tag.
+    AllowedPattern: '[a-z0-9]{2,10}'
+    ConstraintDescription: 'two to ten lowercase letters or digits'
+
+  Subdomain:
+    Type: 'String'
+    Description: >-
+      The single label to delegate, without a dot. "team" against a parent of example.org creates
+      team.example.org. One label only: a multi-label value needs a delegation at each level the
+      parent does not already own, which this blueprint does not create.
+    AllowedPattern: '[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?'
+    ConstraintDescription: >-
+      one DNS label — lowercase letters, digits and hyphens, not starting or ending with a hyphen
+
+  ParentHostedZoneId:
+    Type: 'AWS::SSM::Parameter::Value<String>'
+    Description: >-
+      SSM path holding the parent zone id. Defaults to the shared zone published by shared-infra.
+      The stack must run in the account that owns that zone — a cross-account delegation needs a role
+      this blueprint does not assume.
+    Default: '/none/hosted-zone-id'
+
+  ParentDomainName:
+    Type: 'AWS::SSM::Parameter::Value<String>'
+    Description: >-
+      SSM path holding the parent zone's domain name, used to build the delegated name. Must be the
+      domain of ParentHostedZoneId; if the two disagree the NS record is created in the wrong zone and
+      resolution fails with no stack error.
+    Default: '/none/hosted-zone-domain'
+
+  DelegationTtlSeconds:
+    Type: 'Number'
+    Description: >-
+      TTL on the NS record in the parent zone. Keep it low until the delegation is confirmed working —
+      a wrong NS set cached for a day is a day of downtime. Raise it afterwards.
+    Default: 300
+    MinValue: 60
+    MaxValue: 172800
+
+Resources:
+  # The zone itself. Retained on delete: its name servers are what the parent zone's NS record points
+  # at, and deleting it while that record survives leaves the subdomain lame-delegated — queries fail
+  # rather than falling back to the parent.
+  HostedZone:
+    Type: 'AWS::Route53::HostedZone'
+    DeletionPolicy: 'Retain'
+    UpdateReplacePolicy: 'Retain'
+    Properties:
+      Name: !Sub '${Subdomain}.${ParentDomainName}'
+      HostedZoneConfig:
+        Comment: !Sub 'Delegated subdomain for the ${Application} workspace'
+      HostedZoneTags:
+        - Key: 'Application'
+          Value: !Ref 'Application'
+        - Key: 'Resource'
+          Value: !Sub 'route53-hosted-zone-${Subdomain}'
+
+  # The half that is easy to forget. Without this record the zone above exists, accepts records, and
+  # answers nothing on the public internet.
+  Delegation:
+    Type: 'AWS::Route53::RecordSet'
+    Properties:
+      HostedZoneId: !Ref 'ParentHostedZoneId'
+      Name: !Sub '${Subdomain}.${ParentDomainName}'
+      Type: 'NS'
+      TTL: !Ref 'DelegationTtlSeconds'
+      ResourceRecords: !GetAtt 'HostedZone.NameServers'
+
+Outputs:
+  HostedZoneId:
+    Description: 'Zone id — pass to a certificate or record blueprint stitched after this one'
+    Value: !Ref 'HostedZone'
+    Export:
+      Name: !Sub '${AWS::StackName}-hosted-zone-id'
+
+  DomainName:
+    Description: 'The delegated domain name'
+    Value: !Sub '${Subdomain}.${ParentDomainName}'
+    Export:
+      Name: !Sub '${AWS::StackName}-domain-name'
+
+  NameServers:
+    Description: >-
+      The zone name servers. Already written to the parent by this stack; output for verification
+      with `dig NS <domain>` against a resolver outside the account.
+    Value: !Join [',', !GetAtt 'HostedZone.NameServers']

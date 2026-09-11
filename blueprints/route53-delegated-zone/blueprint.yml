@@ -1,0 +1,13 @@
+name: 'route53-delegated-zone'
+summary: >-
+  A Route 53 public hosted zone for a subdomain, plus the NS delegation record in the parent zone.
+category: 'dns'
+
+versions:
+  - version: 'v1'
+    status: 'current'
+    released: '2026-09-11'
+    notes: >-
+      First version. Creates the zone and the parent-side NS record in one stack. Single-label
+      subdomains only, and the parent zone must live in the same account.
+    replaces_resources_on_update: false

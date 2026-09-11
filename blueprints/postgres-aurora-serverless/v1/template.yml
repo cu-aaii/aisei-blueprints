@@ -1,0 +1,299 @@
+AWSTemplateFormatVersion: '2010-09-09'
+
+Description: >-
+  postgres-aurora-serverless v1 — an Aurora PostgreSQL Serverless v2 cluster in the workspace private
+  subnets, CMK-encrypted, credentials generated into Secrets Manager, reachable only from an explicitly
+  named security group. One writer; an optional reader.
+
+Metadata:
+  Blueprint:
+    Name: 'postgres-aurora-serverless'
+    Version: 'v1'
+
+  'AWS::CloudFormation::Interface':
+    ParameterGroups:
+      - Label:
+          default: 'Naming'
+        Parameters:
+          - 'Application'
+          - 'ClusterName'
+          - 'DatabaseName'
+          - 'MasterUsername'
+      - Label:
+          default: 'Capacity'
+        Parameters:
+          - 'MinCapacityAcu'
+          - 'MaxCapacityAcu'
+          - 'CreateReader'
+      - Label:
+          default: 'Durability'
+        Parameters:
+          - 'BackupRetentionDays'
+          - 'DeletionProtection'
+          - 'EngineVersion'
+      - Label:
+          default: 'Network — from the shared SSM contract'
+        Parameters:
+          - 'VpcId'
+          - 'PrivateSubnetIds'
+          - 'KmsKeyArn'
+
+Parameters:
+  Application:
+    Type: 'String'
+    Description: 'The workspace name — first segment of every SSM path, and the Application tag value.'
+    AllowedPattern: '[a-z0-9]{2,10}'
+    ConstraintDescription: 'two to ten lowercase letters or digits'
+
+  ClusterName:
+    Type: 'String'
+    Description: >-
+      Cluster name, unqualified — the stack prefixes it with the workspace. Renaming REPLACES the
+      cluster: a new empty database, and the old one retained under the old name.
+    AllowedPattern: '[a-z][a-z0-9-]{1,40}'
+    ConstraintDescription: 'a lowercase letter followed by lowercase letters, digits or hyphens'
+
+  DatabaseName:
+    Type: 'String'
+    Description: >-
+      Initial database created inside the cluster. Postgres identifier rules: no hyphens.
+    Default: 'appdb'
+    AllowedPattern: '[a-z][a-z0-9_]{0,62}'
+    ConstraintDescription: 'a lowercase letter followed by lowercase letters, digits or underscores'
+
+  MasterUsername:
+    Type: 'String'
+    Description: >-
+      Master username. The password is GENERATED into Secrets Manager and never appears in this
+      template, a parameter or a config file. "postgres" and "admin" are reserved by the engine.
+    Default: 'dbadmin'
+    AllowedPattern: '[a-z][a-z0-9_]{2,62}'
+    ConstraintDescription: 'a lowercase letter followed by lowercase letters, digits or underscores'
+
+  MinCapacityAcu:
+    Type: 'Number'
+    Description: >-
+      Minimum Aurora Capacity Units. 0 lets the cluster pause when idle — cheapest, but the first
+      connection after a pause waits roughly 15 seconds, which fails a health check that does not
+      expect it. 0.5 is the lowest always-warm setting.
+    Default: 0.5
+    MinValue: 0
+    MaxValue: 128
+
+  MaxCapacityAcu:
+    Type: 'Number'
+    Description: >-
+      Maximum ACU. This is the cost ceiling and the only thing standing between a runaway query and a
+      large bill. 1 ACU is about 2 GiB of memory with matching CPU.
+    Default: 4
+    MinValue: 1
+    MaxValue: 128
+
+  CreateReader:
+    Type: 'String'
+    Description: >-
+      Add a reader instance in a second AZ. Doubles the cost. It is a read-scaling instance that also
+      happens to shorten failover — Aurora survives an AZ loss without it, because storage is already
+      replicated three ways.
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+
+  BackupRetentionDays:
+    Type: 'Number'
+    Description: >-
+      Automated backup retention. Aurora keeps continuous backup for this window, so any second in it
+      is restorable. Backup storage up to the cluster size is free.
+    Default: 7
+    MinValue: 1
+    MaxValue: 35
+
+  DeletionProtection:
+    Type: 'String'
+    Description: >-
+      Blocks DeleteDBCluster at the API. Leave true for anything holding real data — it must be turned
+      off in a separate stack update before a teardown can proceed, which is the point.
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+
+  EngineVersion:
+    Type: 'String'
+    Description: >-
+      Aurora PostgreSQL version. A major-version change is an in-place upgrade with downtime, not a
+      replacement — test it against a restored snapshot first.
+    Default: '16.4'
+    AllowedPattern: '[0-9]{2}\.[0-9]{1,2}'
+    ConstraintDescription: 'a major.minor Aurora PostgreSQL version, for example 16.4'
+
+  VpcId:
+    Type: 'AWS::SSM::Parameter::Value<String>'
+    Description: 'SSM path to the workspace VPC id.'
+    Default: '/none/vpc-id'
+
+  PrivateSubnetIds:
+    Type: 'AWS::SSM::Parameter::Value<List<String>>'
+    Description: >-
+      SSM path to the workspace private subnet list. Must span at least two availability zones —
+      Aurora rejects a subnet group that does not, and the message names the subnet group rather than
+      the cause.
+    Default: '/none/subnets-core-private'
+
+  KmsKeyArn:
+    Type: 'AWS::SSM::Parameter::Value<String>'
+    Description: >-
+      SSM path to the workspace CMK. Encrypts the cluster volume and the generated secret. Storage
+      encryption cannot be turned on or off after creation.
+    Default: '/none/kms-key-arn'
+
+# No `Rules:` block, deliberately. The one rule worth having here -- MaxCapacityAcu >= MinCapacityAcu
+# -- is not expressible: CFN rule functions are equality and boolean only, with no numeric comparison.
+# MinValue/MaxValue bound each parameter independently and Aurora rejects an inverted pair at the API,
+# which is where that error surfaces.
+
+Conditions:
+  WantsReader: !Equals [!Ref 'CreateReader', 'true']
+
+Resources:
+  # Closed by default: no ingress rule at all. A consumer attaches its own egress rule, or adds an
+  # ingress rule referencing its security group. An open CIDR here would be invisible in review.
+  SecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: !Sub 'Postgres access for ${Application}-${ClusterName}'
+      VpcId: !Ref 'VpcId'
+      SecurityGroupEgress:
+        - IpProtocol: '-1'
+          CidrIp: '127.0.0.1/32'
+          Description: 'No egress needed; a database does not initiate connections'
+      Tags:
+        - Key: 'Application'
+          Value: !Ref 'Application'
+        - Key: 'Resource'
+          Value: !Sub 'security-group-postgres-${ClusterName}'
+
+  SubnetGroup:
+    Type: 'AWS::RDS::DBSubnetGroup'
+    Properties:
+      DBSubnetGroupDescription: !Sub 'Private subnets for ${Application}-${ClusterName}'
+      SubnetIds: !Ref 'PrivateSubnetIds'
+      Tags:
+        - Key: 'Application'
+          Value: !Ref 'Application'
+        - Key: 'Resource'
+          Value: !Sub 'db-subnet-group-${ClusterName}'
+
+  # GenerateSecretString, not a NoEcho parameter: the password is never typed, never in a config file
+  # and never in the CloudFormation event log. Excludes the characters Postgres connection URIs and
+  # shell quoting both mishandle.
+  MasterSecret:
+    Type: 'AWS::SecretsManager::Secret'
+    DeletionPolicy: 'Retain'
+    UpdateReplacePolicy: 'Retain'
+    Properties:
+      Name: !Sub '/${Application}/postgres/${ClusterName}/master'
+      Description: !Sub 'Master credentials for ${Application}-${ClusterName}'
+      KmsKeyId: !Ref 'KmsKeyArn'
+      GenerateSecretString:
+        SecretStringTemplate: !Sub '{"username": "${MasterUsername}"}'
+        GenerateStringKey: 'password'
+        PasswordLength: 32
+        ExcludeCharacters: '"@/\''`$&|;<>(){}[]'
+      Tags:
+        - Key: 'Application'
+          Value: !Ref 'Application'
+        - Key: 'Resource'
+          Value: !Sub 'secret-postgres-${ClusterName}'
+
+  Cluster:
+    Type: 'AWS::RDS::DBCluster'
+    DeletionPolicy: 'Snapshot'
+    UpdateReplacePolicy: 'Snapshot'
+    Properties:
+      DBClusterIdentifier: !Sub '${Application}-${ClusterName}'
+      Engine: 'aurora-postgresql'
+      EngineVersion: !Ref 'EngineVersion'
+      DatabaseName: !Ref 'DatabaseName'
+      MasterUsername: !Ref 'MasterUsername'
+      # ssm-secure would NOT work here: it resolves on an 11-property allowlist and this is not on it.
+      # The reference would deploy as literal text and every connection would fail authentication.
+      MasterUserPassword: !Sub '{{resolve:secretsmanager:${MasterSecret}:SecretString:password}}'
+      DBSubnetGroupName: !Ref 'SubnetGroup'
+      VpcSecurityGroupIds:
+        - !GetAtt 'SecurityGroup.GroupId'
+      StorageEncrypted: true
+      KmsKeyId: !Ref 'KmsKeyArn'
+      BackupRetentionPeriod: !Ref 'BackupRetentionDays'
+      DeletionProtection: !Ref 'DeletionProtection'
+      EnableCloudwatchLogsExports:
+        - 'postgresql'
+      ServerlessV2ScalingConfiguration:
+        MinCapacity: !Ref 'MinCapacityAcu'
+        MaxCapacity: !Ref 'MaxCapacityAcu'
+      Tags:
+        - Key: 'Application'
+          Value: !Ref 'Application'
+        - Key: 'Resource'
+          Value: !Sub 'rds-cluster-${ClusterName}'
+
+  Writer:
+    Type: 'AWS::RDS::DBInstance'
+    Properties:
+      DBClusterIdentifier: !Ref 'Cluster'
+      DBInstanceIdentifier: !Sub '${Application}-${ClusterName}-writer'
+      DBInstanceClass: 'db.serverless'
+      Engine: 'aurora-postgresql'
+      PromotionTier: 0
+      Tags:
+        - Key: 'Application'
+          Value: !Ref 'Application'
+        - Key: 'Resource'
+          Value: !Sub 'rds-instance-${ClusterName}-writer'
+
+  Reader:
+    Type: 'AWS::RDS::DBInstance'
+    Condition: 'WantsReader'
+    Properties:
+      DBClusterIdentifier: !Ref 'Cluster'
+      DBInstanceIdentifier: !Sub '${Application}-${ClusterName}-reader'
+      DBInstanceClass: 'db.serverless'
+      Engine: 'aurora-postgresql'
+      PromotionTier: 1
+      Tags:
+        - Key: 'Application'
+          Value: !Ref 'Application'
+        - Key: 'Resource'
+          Value: !Sub 'rds-instance-${ClusterName}-reader'
+
+Outputs:
+  WriterEndpoint:
+    Description: 'Cluster writer endpoint — follows a failover, so never hardcode an instance endpoint'
+    Value: !GetAtt 'Cluster.Endpoint.Address'
+    Export:
+      Name: !Sub '${AWS::StackName}-writer-endpoint'
+
+  ReaderEndpoint:
+    Description: >-
+      Cluster reader endpoint. Valid even with no reader instance — it resolves to the writer, so a
+      read-only consumer needs no config change when a reader is added later.
+    Value: !GetAtt 'Cluster.ReadEndpoint.Address'
+    Export:
+      Name: !Sub '${AWS::StackName}-reader-endpoint'
+
+  Port:
+    Description: 'Cluster port'
+    Value: !GetAtt 'Cluster.Endpoint.Port'
+
+  SecurityGroupId:
+    Description: >-
+      The cluster security group. A consumer adds an ingress rule referencing its own group — this
+      blueprint creates no ingress, so nothing can connect until something does.
+    Value: !GetAtt 'SecurityGroup.GroupId'
+    Export:
+      Name: !Sub '${AWS::StackName}-security-group-id'
+
+  MasterSecretArn:
+    Description: >-
+      Secrets Manager ARN of the generated credentials. Deliver to a task as an ECS `Secrets` entry;
+      never resolve it into an environment variable in a template.
+    Value: !Ref 'MasterSecret'
+    Export:
+      Name: !Sub '${AWS::StackName}-master-secret-arn'

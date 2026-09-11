@@ -1,0 +1,22 @@
+{
+    "Parameters": {
+        "Application": "",
+        "ClusterName": "",
+        "DatabaseName": "appdb",
+        "MasterUsername": "dbadmin",
+        "MinCapacityAcu": "0.5",
+        "MaxCapacityAcu": "4",
+        "CreateReader": "false",
+        "BackupRetentionDays": "7",
+        "DeletionProtection": "true",
+        "EngineVersion": "16.4",
+        "VpcId": "/CHANGE-ME/vpc-id",
+        "PrivateSubnetIds": "/CHANGE-ME/subnets-core-private",
+        "KmsKeyArn": "/CHANGE-ME/kms-key-arn"
+    },
+    "Tags": {
+        "Application": "",
+        "Resource": "cloudformation-stack-postgres-aurora-serverless",
+        "Cost Center": "none"
+    }
+}

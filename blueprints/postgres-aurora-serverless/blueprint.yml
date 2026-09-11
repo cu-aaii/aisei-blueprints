@@ -1,0 +1,20 @@
+name: 'postgres-aurora-serverless'
+summary: >-
+  An Aurora PostgreSQL Serverless v2 cluster in the workspace private subnets, CMK-encrypted, with
+  credentials generated into Secrets Manager and no ingress rule of its own.
+category: 'datastore'
+compare_with:
+  - 'dynamodb-table'
+
+versions:
+  - version: 'v1'
+    status: 'current'
+    released: '2026-09-11'
+    notes: >-
+      First version. One writer, optional reader, Serverless v2 scaling from 0.5 to 4 ACU by default.
+      No RDS Proxy, no IAM database authentication, no read replica in a second region.
+    replaces_resources_on_update: true
+    replacement_triggers:
+      - 'ClusterName'
+      - 'DatabaseName'
+      - 'MasterUsername'

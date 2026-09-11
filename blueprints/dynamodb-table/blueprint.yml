@@ -1,0 +1,20 @@
+name: 'dynamodb-table'
+summary: >-
+  One DynamoDB table with the workspace CMK, optional point-in-time recovery, TTL and one GSI.
+category: 'datastore'
+compare_with:
+  - 'postgres-aurora-serverless'
+
+versions:
+  - version: 'v1'
+    status: 'current'
+    released: '2026-09-11'
+    notes: >-
+      First version. On-demand billing by default, one optional global secondary index projecting ALL.
+      No streams and no global tables.
+    replaces_resources_on_update: true
+    replacement_triggers:
+      - 'TableName'
+      - 'PartitionKeyName'
+      - 'PartitionKeyType'
+      - 'SortKeyName'

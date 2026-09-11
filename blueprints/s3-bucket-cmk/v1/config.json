@@ -1,0 +1,18 @@
+{
+    "Parameters": {
+        "Application": "",
+        "BucketPurpose": "",
+        "NoncurrentVersionExpirationDays": "90",
+        "CurrentVersionExpirationDays": "0",
+        "TransitionToInfrequentAccessDays": "0",
+        "AbortIncompleteUploadDays": "7",
+        "EnableAccessLogging": "false",
+        "AllowedPrincipalArn": "",
+        "KmsKeyArn": "/CHANGE-ME/kms-key-arn"
+    },
+    "Tags": {
+        "Application": "",
+        "Resource": "cloudformation-stack-s3-bucket-cmk",
+        "Cost Center": "none"
+    }
+}

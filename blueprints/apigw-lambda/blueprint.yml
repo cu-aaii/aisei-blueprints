@@ -1,0 +1,17 @@
+name: 'apigw-lambda'
+summary: >-
+  An HTTP API in front of one Lambda function, with a custom domain matching the alb-ecs-service
+  hostname shape, an optional JWT authorizer, and no cost when idle.
+category: 'compute'
+compare_with:
+  - 'alb-ecs-service'
+
+versions:
+  - version: 'v1'
+    status: 'current'
+    released: '2026-09-11'
+    notes: >-
+      First version. Container image only — no zip path, because a zip needs a pinned Runtime and
+      those expire. arm64, one $default route, HTTP API v2 rather than REST. No provisioned
+      concurrency, no WAF (HTTP APIs cannot take one), no Lambda alias or versioning.
+    replaces_resources_on_update: false

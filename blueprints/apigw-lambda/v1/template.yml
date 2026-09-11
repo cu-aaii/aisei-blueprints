@@ -1,0 +1,474 @@
+AWSTemplateFormatVersion: '2010-09-09'
+
+Description: >-
+  apigw-lambda v1 — an HTTP API in front of one Lambda function: proxy integration on $default, a
+  custom domain with the workspace wildcard certificate, an A record, a log group per side, and an
+  optional JWT authorizer. Nothing runs, and nothing is billed, until a request arrives.
+
+Metadata:
+  Blueprint:
+    Name: 'apigw-lambda'
+    Version: 'v1'
+
+  'AWS::CloudFormation::Interface':
+    ParameterGroups:
+      - Label:
+          default: 'Naming'
+        Parameters:
+          - 'Application'
+          - 'FunctionName'
+          - 'ServiceEnvironment'
+      - Label:
+          default: 'Code'
+        Parameters:
+          - 'ImageUri'
+      - Label:
+          default: 'Execution'
+        Parameters:
+          - 'MemorySizeMb'
+          - 'TimeoutSeconds'
+          - 'ReservedConcurrency'
+          - 'AttachToVpc'
+      - Label:
+          default: 'API'
+        Parameters:
+          - 'ThrottlingBurstLimit'
+          - 'ThrottlingRateLimit'
+          - 'CorsAllowOrigin'
+          - 'LogRetentionDays'
+      - Label:
+          default: 'Authorization — both are required together, or neither'
+        Parameters:
+          - 'JwtIssuer'
+          - 'JwtAudience'
+
+Parameters:
+  Application:
+    Type: 'String'
+    Description: 'The workspace name — first segment of every SSM path, and the Application tag value.'
+    AllowedPattern: '[a-z0-9]{2,10}'
+    ConstraintDescription: 'two to ten lowercase letters or digits'
+
+  FunctionName:
+    Type: 'String'
+    Description: >-
+      Function name, unqualified. Appears in the hostname, the function name and the log group paths.
+    AllowedPattern: '[a-z0-9-]{1,20}'
+    ConstraintDescription: 'lowercase letters, digits and hyphens, at most 20 characters'
+
+  ServiceEnvironment:
+    Type: 'String'
+    Description: 'Environment name — a configuration directory, not a git branch. Appears in the hostname.'
+    AllowedPattern: '[a-z0-9-]{1,12}'
+    ConstraintDescription: 'lowercase letters, digits and hyphens, at most 12 characters'
+
+  # Container image only, no zip path -- see apigw-lambda.md, "What this blueprint deliberately
+  # leaves out". A zip needs a Runtime parameter, and a pinned runtime list goes stale: cfn-lint
+  # already warns that nodejs20.x is deprecated. An image has no such expiry.
+  ImageUri:
+    Type: 'String'
+    Description: >-
+      ECR image built against a Lambda base image, or implementing the runtime API. Pin by digest —
+      Lambda resolves a tag ONCE at deploy and never re-checks it, so moving a tag changes nothing
+      until the next stack update, which is a confusing way to find out.
+    AllowedPattern: '[0-9]{12}\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com/.+'
+    ConstraintDescription: 'an ECR image reference; Lambda cannot run an image from anywhere else'
+
+  MemorySizeMb:
+    Type: 'Number'
+    Description: >-
+      Memory, and proportionally CPU — they are the same dial. A function is often CHEAPER at higher
+      memory because it finishes sooner; 1769 MB is one full vCPU. Measure before economising.
+    Default: 512
+    MinValue: 128
+    MaxValue: 10240
+
+  TimeoutSeconds:
+    Type: 'Number'
+    Description: >-
+      Function timeout, up to 900. API Gateway gives up at 29 seconds regardless, so anything above
+      that only matters for a non-HTTP invoker.
+    Default: 30
+    MinValue: 1
+    MaxValue: 900
+
+  ReservedConcurrency:
+    Type: 'Number'
+    Description: >-
+      Cap on simultaneous executions. -1 means unreserved: this function can consume the whole
+      account's 1000-concurrency pool and starve every other function in it. A number both bounds the
+      blast radius and bounds the bill.
+    Default: 10
+    MinValue: -1
+    MaxValue: 1000
+
+  AttachToVpc:
+    Type: 'String'
+    Description: >-
+      Run in the workspace private subnets. Required to reach a database; costs an ENI per concurrent
+      execution and gives the function NO internet route unless the subnets have a NAT gateway.
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+
+  ThrottlingBurstLimit:
+    Type: 'Number'
+    Description: 'Requests absorbed in a burst before throttling.'
+    Default: 200
+    MinValue: 1
+
+  ThrottlingRateLimit:
+    Type: 'Number'
+    Description: >-
+      Steady-state requests per second. This is the only ceiling on what a loop in someone else's code
+      can cost you — API Gateway has no free tier after the first year.
+    Default: 100
+    MinValue: 1
+
+  CorsAllowOrigin:
+    Type: 'String'
+    Description: >-
+      Single allowed origin, or empty for no CORS configuration. A literal * is rejected here on
+      purpose: it cannot be combined with credentials, and an API that needs any origin usually has
+      not decided who its callers are.
+    Default: ''
+    AllowedPattern: '|https://[a-z0-9.-]{1,253}'
+    ConstraintDescription: 'empty, or a single https origin — not *'
+
+  LogRetentionDays:
+    Type: 'Number'
+    Description: 'Retention for both the access log and the function log. Never leave either unbounded.'
+    Default: 30
+    AllowedValues: [1, 3, 5, 7, 14, 30, 60, 90, 180, 365, 400, 545, 731]
+
+  JwtIssuer:
+    Type: 'String'
+    Description: >-
+      OIDC issuer URL for a JWT authorizer, or empty for an API with NO authorization at all. Empty
+      means every route is public to the internet — correct for a public endpoint, a mistake anywhere
+      else.
+    Default: ''
+
+  JwtAudience:
+    Type: 'String'
+    Description: 'Expected audience claim. Required when JwtIssuer is set.'
+    Default: ''
+
+Rules:
+  # A change set does NOT evaluate Rules -- they fire on create, update and change-set execution.
+  JwtAudienceRequiredWithIssuer:
+    RuleCondition: !Not [!Equals [!Ref 'JwtIssuer', '']]
+    Assertions:
+      - Assert: !Not [!Equals [!Ref 'JwtAudience', '']]
+        AssertDescription: >-
+          JwtAudience is required when JwtIssuer is set — an authorizer that validates the signature
+          but not the audience accepts any token the same issuer ever minted, for any application
+
+Conditions:
+  HasReservedConcurrency: !Not [!Equals [!Ref 'ReservedConcurrency', -1]]
+  AttachToVpc: !Equals [!Ref 'AttachToVpc', 'true']
+  HasCors: !Not [!Equals [!Ref 'CorsAllowOrigin', '']]
+  HasJwtAuthorizer: !Not [!Equals [!Ref 'JwtIssuer', '']]
+
+Resources:
+  # ---------------------------------------------------------------------------------------------
+  # Function
+  # ---------------------------------------------------------------------------------------------
+
+  # Created explicitly rather than left to Lambda's implicit creation: an implicitly created log
+  # group has NO retention and never gets any, so it accumulates forever at $0.03/GB-month.
+  FunctionLogGroup:
+    Type: 'AWS::Logs::LogGroup'
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${Application}-${FunctionName}-${ServiceEnvironment}'
+      RetentionInDays: !Ref 'LogRetentionDays'
+      KmsKeyId: !Sub '{{resolve:ssm:/${Application}/kms-key-arn}}'
+
+  FunctionSecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Condition: 'AttachToVpc'
+    Properties:
+      GroupDescription: !Sub 'Lambda security group for ${Application}-${FunctionName}-${ServiceEnvironment}'
+      VpcId: !Sub '{{resolve:ssm:/${Application}/vpc-id}}'
+      SecurityGroupEgress:
+        - CidrIp: '0.0.0.0/0'
+          IpProtocol: 'tcp'
+          FromPort: 443
+          ToPort: 443
+          Description: 'HTTPS to AWS APIs and anything reachable from the private subnets'
+      Tags:
+        - Key: 'Application'
+          Value: !Ref 'Application'
+        - Key: 'Service'
+          Value: !Ref 'FunctionName'
+        - Key: 'Environment'
+          Value: !Ref 'ServiceEnvironment'
+        - Key: 'Resource'
+          Value: 'security-group-lambda'
+
+  # No explicit RoleName: ${Application}-${FunctionName}-${ServiceEnvironment}-lambda can exceed
+  # IAM's 64 characters. Starts with logs only; every application permission is an addition.
+  FunctionRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: 'Allow'
+            Principal:
+              Service: 'lambda.amazonaws.com'
+            Action: 'sts:AssumeRole'
+            Condition:
+              StringEquals:
+                'aws:SourceAccount': !Ref 'AWS::AccountId'
+      # The AWS-managed VPC policy, only when in a VPC. Creating and deleting ENIs cannot be scoped
+      # to one subnet -- the actions take no useful resource condition -- which is a real cost of
+      # AttachToVpc rather than a shortcut here.
+      ManagedPolicyArns: !If
+        - 'AttachToVpc'
+        - - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole'
+        - !Ref 'AWS::NoValue'
+      Policies:
+        - PolicyName: 'logs'
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: 'Allow'
+                Action:
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'
+                Resource: !Sub '${FunctionLogGroup.Arn}:*'
+      Tags:
+        - Key: 'Application'
+          Value: !Ref 'Application'
+        - Key: 'Service'
+          Value: !Ref 'FunctionName'
+        - Key: 'Environment'
+          Value: !Ref 'ServiceEnvironment'
+        - Key: 'Resource'
+          Value: 'iam-role-lambda'
+
+  Function:
+    Type: 'AWS::Lambda::Function'
+    # Without this the function can be created first, and Lambda then creates the log group
+    # implicitly -- with no retention, permanently.
+    DependsOn:
+      - 'FunctionLogGroup'
+    Properties:
+      FunctionName: !Sub '${Application}-${FunctionName}-${ServiceEnvironment}'
+      Description: !Sub '${FunctionName} (${ServiceEnvironment})'
+      Role: !GetAtt 'FunctionRole.Arn'
+      PackageType: 'Image'
+      Code:
+        ImageUri: !Ref 'ImageUri'
+      Architectures:
+        # arm64 is roughly 20 percent cheaper per GB-second at equal or better performance. The
+        # image must be built for it -- an x86 image fails at invoke, not at deploy.
+        - 'arm64'
+      MemorySize: !Ref 'MemorySizeMb'
+      Timeout: !Ref 'TimeoutSeconds'
+      ReservedConcurrentExecutions: !If
+        - 'HasReservedConcurrency'
+        - !Ref 'ReservedConcurrency'
+        - !Ref 'AWS::NoValue'
+      KmsKeyArn: !Sub '{{resolve:ssm:/${Application}/kms-key-arn}}'
+      VpcConfig: !If
+        - 'AttachToVpc'
+        - SecurityGroupIds:
+            - !GetAtt 'FunctionSecurityGroup.GroupId'
+          SubnetIds:
+            - !Sub '{{resolve:ssm:/${Application}/subnet-core-private-a}}'
+            - !Sub '{{resolve:ssm:/${Application}/subnet-core-private-b}}'
+        - !Ref 'AWS::NoValue'
+      Environment:
+        Variables:
+          APPLICATION: !Ref 'Application'
+          SERVICE_NAME: !Ref 'FunctionName'
+          ENVIRONMENT: !Ref 'ServiceEnvironment'
+      TracingConfig:
+        Mode: 'Active'
+      Tags:
+        - Key: 'Application'
+          Value: !Ref 'Application'
+        - Key: 'Service'
+          Value: !Ref 'FunctionName'
+        - Key: 'Environment'
+          Value: !Ref 'ServiceEnvironment'
+        - Key: 'Resource'
+          Value: 'lambda-function'
+
+  # ---------------------------------------------------------------------------------------------
+  # HTTP API. The v2 API, not REST: about a third of the price, and everything below is available
+  # in it. Choose the REST API only for a resource policy, WAF or request validation.
+  # ---------------------------------------------------------------------------------------------
+
+  ApiLogGroup:
+    Type: 'AWS::Logs::LogGroup'
+    Properties:
+      LogGroupName: !Sub '/aws/apigateway/${Application}/${FunctionName}/${ServiceEnvironment}'
+      RetentionInDays: !Ref 'LogRetentionDays'
+      KmsKeyId: !Sub '{{resolve:ssm:/${Application}/kms-key-arn}}'
+
+  Api:
+    Type: 'AWS::ApiGatewayV2::Api'
+    Properties:
+      Name: !Sub '${Application}-${FunctionName}-${ServiceEnvironment}'
+      ProtocolType: 'HTTP'
+      CorsConfiguration: !If
+        - 'HasCors'
+        - AllowOrigins:
+            - !Ref 'CorsAllowOrigin'
+          AllowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS']
+          AllowHeaders: ['authorization', 'content-type']
+          AllowCredentials: true
+          MaxAge: 600
+        - !Ref 'AWS::NoValue'
+      Tags:
+        Application: !Ref 'Application'
+        Service: !Ref 'FunctionName'
+        Environment: !Ref 'ServiceEnvironment'
+        Resource: 'apigateway-http-api'
+
+  Integration:
+    Type: 'AWS::ApiGatewayV2::Integration'
+    Properties:
+      ApiId: !Ref 'Api'
+      IntegrationType: 'AWS_PROXY'
+      IntegrationUri: !GetAtt 'Function.Arn'
+      # 2.0 gives the handler an event with cookies parsed and a single rawQueryString, and lets it
+      # return a bare object instead of a statusCode/body envelope. 1.0 is the ALB-ish shape.
+      PayloadFormatVersion: '2.0'
+      TimeoutInMillis: 29000
+
+  Authorizer:
+    Type: 'AWS::ApiGatewayV2::Authorizer'
+    Condition: 'HasJwtAuthorizer'
+    Properties:
+      ApiId: !Ref 'Api'
+      Name: 'jwt'
+      AuthorizerType: 'JWT'
+      IdentitySource:
+        - '$request.header.Authorization'
+      JwtConfiguration:
+        Issuer: !Ref 'JwtIssuer'
+        Audience:
+          - !Ref 'JwtAudience'
+
+  # One catch-all route. The function does its own routing, which is what makes this a drop-in for a
+  # small web framework. Add explicit routes when different paths need different authorizers.
+  DefaultRoute:
+    Type: 'AWS::ApiGatewayV2::Route'
+    Properties:
+      ApiId: !Ref 'Api'
+      RouteKey: '$default'
+      Target: !Sub 'integrations/${Integration}'
+      AuthorizationType: !If ['HasJwtAuthorizer', 'JWT', 'NONE']
+      AuthorizerId: !If ['HasJwtAuthorizer', !Ref 'Authorizer', !Ref 'AWS::NoValue']
+
+  Stage:
+    Type: 'AWS::ApiGatewayV2::Stage'
+    Properties:
+      ApiId: !Ref 'Api'
+      # $default is the only stage, so the stage name never appears in a URL. A named stage would
+      # put /prod/ in every path and then need stripping again at the custom domain mapping.
+      StageName: '$default'
+      AutoDeploy: true
+      DefaultRouteSettings:
+        DetailedMetricsEnabled: true
+        ThrottlingBurstLimit: !Ref 'ThrottlingBurstLimit'
+        ThrottlingRateLimit: !Ref 'ThrottlingRateLimit'
+      AccessLogSettings:
+        DestinationArn: !GetAtt 'ApiLogGroup.Arn'
+        Format: >-
+          {"requestId":"$context.requestId","ip":"$context.identity.sourceIp","requestTime":"$context.requestTime","httpMethod":"$context.httpMethod","routeKey":"$context.routeKey","status":"$context.status","protocol":"$context.protocol","responseLength":"$context.responseLength","integrationError":"$context.integrationErrorMessage"}
+      Tags:
+        Application: !Ref 'Application'
+        Service: !Ref 'FunctionName'
+        Environment: !Ref 'ServiceEnvironment'
+        Resource: 'apigateway-stage'
+
+  # Scoped to this API: a bare lambda:InvokeFunction grant to apigateway.amazonaws.com lets ANY API
+  # in the account invoke the function.
+  InvokePermission:
+    Type: 'AWS::Lambda::Permission'
+    Properties:
+      FunctionName: !GetAtt 'Function.Arn'
+      Action: 'lambda:InvokeFunction'
+      Principal: 'apigateway.amazonaws.com'
+      SourceArn: !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${Api}/*'
+
+  # ---------------------------------------------------------------------------------------------
+  # Custom domain. Same hostname shape as alb-ecs-service, so a service can move between the two
+  # without its callers noticing.
+  # ---------------------------------------------------------------------------------------------
+
+  DomainName:
+    Type: 'AWS::ApiGatewayV2::DomainName'
+    Properties:
+      DomainName: !Sub
+        - '${FunctionName}-${ServiceEnvironment}.${HostedZoneDomain}'
+        - HostedZoneDomain: !Sub '{{resolve:ssm:/${Application}/hosted-zone-domain}}'
+      DomainNameConfigurations:
+        - CertificateArn: !Sub '{{resolve:ssm:/${Application}/domain-wildcard-certificate-arn}}'
+          EndpointType: 'REGIONAL'
+          SecurityPolicy: 'TLS_1_2'
+      Tags:
+        Application: !Ref 'Application'
+        Service: !Ref 'FunctionName'
+        Environment: !Ref 'ServiceEnvironment'
+        Resource: 'apigateway-domain-name'
+
+  ApiMapping:
+    Type: 'AWS::ApiGatewayV2::ApiMapping'
+    Properties:
+      ApiId: !Ref 'Api'
+      DomainName: !Ref 'DomainName'
+      Stage: !Ref 'Stage'
+
+  RecordSet:
+    Type: 'AWS::Route53::RecordSet'
+    Properties:
+      HostedZoneId: !Sub '{{resolve:ssm:/${Application}/hosted-zone-id}}'
+      Name: !Sub
+        - '${FunctionName}-${ServiceEnvironment}.${HostedZoneDomain}'
+        - HostedZoneDomain: !Sub '{{resolve:ssm:/${Application}/hosted-zone-domain}}'
+      Type: 'A'
+      AliasTarget:
+        DNSName: !GetAtt 'DomainName.RegionalDomainName'
+        HostedZoneId: !GetAtt 'DomainName.RegionalHostedZoneId'
+
+Outputs:
+  ServiceUrl:
+    Description: 'The public URL of the API — same hostname shape as alb-ecs-service'
+    Value: !Sub
+      - 'https://${FunctionName}-${ServiceEnvironment}.${HostedZoneDomain}'
+      - HostedZoneDomain: !Sub '{{resolve:ssm:/${Application}/hosted-zone-domain}}'
+
+  ApiEndpoint:
+    Description: >-
+      The execute-api endpoint. Still reachable and NOT authenticated by anything the custom domain
+      adds — the authorizer is on the route, which is the only reason that is safe here.
+    Value: !GetAtt 'Api.ApiEndpoint'
+
+  FunctionArn:
+    Description: 'Function ARN'
+    Value: !GetAtt 'Function.Arn'
+    Export:
+      Name: !Sub '${AWS::StackName}-function-arn'
+
+  FunctionRoleArn:
+    Description: >-
+      The function role, which starts with logs only. Attach application permissions to this.
+    Value: !GetAtt 'FunctionRole.Arn'
+    Export:
+      Name: !Sub '${AWS::StackName}-function-role-arn'
+
+  FunctionSecurityGroupId:
+    Description: >-
+      The function security group when AttachToVpc is true, otherwise the literal none. This is what
+      a datastore blueprint grants ingress from.
+    Value: !If
+      - 'AttachToVpc'
+      - !GetAtt 'FunctionSecurityGroup.GroupId'
+      - 'none'
+    Export:
+      Name: !Sub '${AWS::StackName}-function-security-group-id'
