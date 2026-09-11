@@ -1,0 +1,175 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "$id": "apigw-lambda/v1/schema.json",
+    "title": "apigw-lambda v1 config",
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+        "Parameters",
+        "Tags"
+    ],
+    "properties": {
+        "Parameters": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+                "FunctionName",
+                "ImageUri",
+                "ServiceEnvironment"
+            ],
+            "properties": {
+                "Application": false,
+                "FunctionName": {
+                    "type": "string",
+                    "pattern": "^(?:[a-z0-9-]{1,20})$",
+                    "description": "Function name, unqualified. Appears in the hostname, the function name and the log group paths. Constraint: lowercase letters, digits and hyphens, at most 20 characters"
+                },
+                "ServiceEnvironment": {
+                    "type": "string",
+                    "pattern": "^(?:[a-z0-9-]{1,12})$",
+                    "description": "Environment name \u2014 a configuration directory, not a git branch. Appears in the hostname. Constraint: lowercase letters, digits and hyphens, at most 12 characters"
+                },
+                "ImageUri": {
+                    "type": "string",
+                    "pattern": "^(?:[0-9]{12}\\.dkr\\.ecr\\.[a-z0-9-]+\\.amazonaws\\.com/.+)$",
+                    "description": "ECR image built against a Lambda base image, or implementing the runtime API. Pin by digest \u2014 Lambda resolves a tag ONCE at deploy and never re-checks it, so moving a tag changes nothing until the next stack update, which is a confusing way to find out. Constraint: an ECR image reference; Lambda cannot run an image from anywhere else"
+                },
+                "MemorySizeMb": {
+                    "type": "string",
+                    "pattern": "^-?(?:\\d+(?:\\.\\d+)?|\\.\\d+)(?:[eE][-+]?\\d+)?$",
+                    "default": "512",
+                    "description": "Memory, and proportionally CPU \u2014 they are the same dial. A function is often CHEAPER at higher memory because it finishes sooner; 1769 MB is one full vCPU. Measure before economising. CFN Type: Number, written as a string in the config (>= 128, <= 10240)."
+                },
+                "TimeoutSeconds": {
+                    "type": "string",
+                    "pattern": "^-?(?:\\d+(?:\\.\\d+)?|\\.\\d+)(?:[eE][-+]?\\d+)?$",
+                    "default": "30",
+                    "description": "Function timeout, up to 900. API Gateway gives up at 29 seconds regardless, so anything above that only matters for a non-HTTP invoker. CFN Type: Number, written as a string in the config (>= 1, <= 900)."
+                },
+                "ReservedConcurrency": {
+                    "type": "string",
+                    "pattern": "^-?(?:\\d+(?:\\.\\d+)?|\\.\\d+)(?:[eE][-+]?\\d+)?$",
+                    "default": "10",
+                    "description": "Cap on simultaneous executions. -1 means unreserved: this function can consume the whole account's 1000-concurrency pool and starve every other function in it. A number both bounds the blast radius and bounds the bill. CFN Type: Number, written as a string in the config (>= -1, <= 1000)."
+                },
+                "AttachToVpc": {
+                    "type": "string",
+                    "enum": [
+                        "true",
+                        "false"
+                    ],
+                    "default": "false",
+                    "description": "Run in the workspace private subnets. Required to reach a database; costs an ENI per concurrent execution and gives the function NO internet route unless the subnets have a NAT gateway."
+                },
+                "ThrottlingBurstLimit": {
+                    "type": "string",
+                    "pattern": "^-?(?:\\d+(?:\\.\\d+)?|\\.\\d+)(?:[eE][-+]?\\d+)?$",
+                    "default": "200",
+                    "description": "Requests absorbed in a burst before throttling. CFN Type: Number, written as a string in the config (>= 1)."
+                },
+                "ThrottlingRateLimit": {
+                    "type": "string",
+                    "pattern": "^-?(?:\\d+(?:\\.\\d+)?|\\.\\d+)(?:[eE][-+]?\\d+)?$",
+                    "default": "100",
+                    "description": "Steady-state requests per second. This is the only ceiling on what a loop in someone else's code can cost you \u2014 API Gateway has no free tier after the first year. CFN Type: Number, written as a string in the config (>= 1)."
+                },
+                "CorsAllowOrigin": {
+                    "type": "string",
+                    "pattern": "^(?:|https://[a-z0-9.-]{1,253})$",
+                    "default": "",
+                    "description": "Single allowed origin, or empty for no CORS configuration. A literal * is rejected here on purpose: it cannot be combined with credentials, and an API that needs any origin usually has not decided who its callers are. Constraint: empty, or a single https origin \u2014 not *"
+                },
+                "LogRetentionDays": {
+                    "type": "string",
+                    "pattern": "^-?(?:\\d+(?:\\.\\d+)?|\\.\\d+)(?:[eE][-+]?\\d+)?$",
+                    "enum": [
+                        "1",
+                        "3",
+                        "5",
+                        "7",
+                        "14",
+                        "30",
+                        "60",
+                        "90",
+                        "180",
+                        "365",
+                        "400",
+                        "545",
+                        "731"
+                    ],
+                    "default": "30",
+                    "description": "Retention for both the access log and the function log. Never leave either unbounded. CFN Type: Number, written as a string in the config."
+                },
+                "JwtIssuer": {
+                    "type": "string",
+                    "default": "",
+                    "description": "OIDC issuer URL for a JWT authorizer, or empty for an API with NO authorization at all. Empty means every route is public to the internet \u2014 correct for a public endpoint, a mistake anywhere else."
+                },
+                "JwtAudience": {
+                    "type": "string",
+                    "default": "",
+                    "description": "Expected audience claim. Required when JwtIssuer is set."
+                }
+            },
+            "allOf": [
+                {
+                    "$comment": "CFN Rule JwtAudienceRequiredWithIssuer",
+                    "then": {
+                        "required": [
+                            "JwtAudience"
+                        ],
+                        "properties": {
+                            "JwtAudience": {
+                                "minLength": 1,
+                                "$comment": "JwtAudience is required when JwtIssuer is set \u2014 an authorizer that validates the signature but not the audience accepts any token the same issuer ever minted, for any application"
+                            }
+                        }
+                    },
+                    "if": {
+                        "not": {
+                            "anyOf": [
+                                {
+                                    "not": {
+                                        "required": [
+                                            "JwtIssuer"
+                                        ]
+                                    }
+                                },
+                                {
+                                    "required": [
+                                        "JwtIssuer"
+                                    ],
+                                    "properties": {
+                                        "JwtIssuer": {
+                                            "const": ""
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                }
+            ]
+        },
+        "Tags": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+                "Application",
+                "Resource",
+                "Cost Center"
+            ],
+            "properties": {
+                "Application": {
+                    "type": "string"
+                },
+                "Resource": {
+                    "type": "string"
+                },
+                "Cost Center": {
+                    "type": "string"
+                }
+            }
+        }
+    }
+}

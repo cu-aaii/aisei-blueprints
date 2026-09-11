@@ -1,0 +1,218 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "$id": "alb-ecs-service/v1/schema.json",
+    "title": "alb-ecs-service v1 config",
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+        "Parameters",
+        "Tags"
+    ],
+    "properties": {
+        "Parameters": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+                "ServiceEnvironment",
+                "ServiceImageUri",
+                "ServiceName"
+            ],
+            "properties": {
+                "Application": false,
+                "ServiceName": {
+                    "type": "string",
+                    "pattern": "^(?:[a-z0-9-]{1,20})$",
+                    "description": "Service name, unqualified. Appears in the hostname, the ECS service name, the container name and the Service Connect discovery name. Constraint: lowercase letters, digits and hyphens, at most 20 characters"
+                },
+                "ServiceEnvironment": {
+                    "type": "string",
+                    "pattern": "^(?:[a-z0-9-]{1,12})$",
+                    "description": "Environment name \u2014 a configuration directory, not a git branch. Appears in the hostname. Constraint: lowercase letters, digits and hyphens, at most 12 characters"
+                },
+                "ServiceImageUri": {
+                    "type": "string",
+                    "pattern": "^(?:.+)$",
+                    "description": "Full image reference. Pin by digest \u2014 repo@sha256:\u2026 \u2014 so a redeploy of the same stack cannot quietly pick up a different image. A moving tag makes the stack a lie about what is running. Constraint: a full image reference; pin by digest where possible"
+                },
+                "ServicePort": {
+                    "type": "string",
+                    "pattern": "^-?(?:\\d+(?:\\.\\d+)?|\\.\\d+)(?:[eE][-+]?\\d+)?$",
+                    "default": "8080",
+                    "description": "The TCP port the container listens on. CFN Type: Number, written as a string in the config (>= 1, <= 65535)."
+                },
+                "ServiceHealthCheckPath": {
+                    "type": "string",
+                    "pattern": "^(?:^/.*)$",
+                    "default": "/health",
+                    "description": "HTTP path returning 200 when healthy. Used by both the target group and the container health check. It must answer before authentication \u2014 the ALB health check does not carry an OIDC session, so a path behind the app's own login redirect never passes."
+                },
+                "TaskCpu": {
+                    "type": "string",
+                    "pattern": "^-?(?:\\d+(?:\\.\\d+)?|\\.\\d+)(?:[eE][-+]?\\d+)?$",
+                    "enum": [
+                        "256",
+                        "512",
+                        "1024",
+                        "2048",
+                        "4096"
+                    ],
+                    "default": "1024",
+                    "description": "Fargate CPU units. Only certain CPU/memory pairs are valid; 1024 CPU accepts 2048 to 8192 memory. An invalid pair fails at task registration, not at template validation. CFN Type: Number, written as a string in the config."
+                },
+                "TaskMemory": {
+                    "type": "string",
+                    "pattern": "^-?(?:\\d+(?:\\.\\d+)?|\\.\\d+)(?:[eE][-+]?\\d+)?$",
+                    "default": "2048",
+                    "description": "Fargate memory in MiB. Must be a legal pairing with TaskCpu. CFN Type: Number, written as a string in the config (>= 512, <= 30720)."
+                },
+                "DesiredCount": {
+                    "type": "string",
+                    "pattern": "^-?(?:\\d+(?:\\.\\d+)?|\\.\\d+)(?:[eE][-+]?\\d+)?$",
+                    "default": "1",
+                    "description": "Task count. 1 means a deployment has a gap unless the deployment configuration overlaps, and a single AZ failure takes the service down. 2 is the first number that is actually available. CFN Type: Number, written as a string in the config (>= 0, <= 10)."
+                },
+                "EnableIpv6": {
+                    "type": "string",
+                    "enum": [
+                        "true",
+                        "false"
+                    ],
+                    "default": "true",
+                    "description": "Dualstack ALB plus an AAAA record. Must be false when the workspace publishes /<workspace>/vpc-ipv6-cidr-blocks = none \u2014 CloudFormation cannot read an SSM value inside a Condition, so this is an explicit input rather than something the template can infer."
+                },
+                "LogRetentionDays": {
+                    "type": "string",
+                    "pattern": "^-?(?:\\d+(?:\\.\\d+)?|\\.\\d+)(?:[eE][-+]?\\d+)?$",
+                    "enum": [
+                        "1",
+                        "3",
+                        "5",
+                        "7",
+                        "14",
+                        "30",
+                        "60",
+                        "90",
+                        "180",
+                        "365",
+                        "400",
+                        "545",
+                        "731"
+                    ],
+                    "default": "30",
+                    "description": "CloudWatch Logs retention. Never leave a log group unbounded. CFN Type: Number, written as a string in the config."
+                },
+                "UseOidc": {
+                    "type": "string",
+                    "enum": [
+                        "true",
+                        "false"
+                    ],
+                    "default": "true",
+                    "description": "Authenticate every request at the ALB before it reaches the container. This is authentication only \u2014 it proves who the caller is and nothing about whether they are allowed in. Real authorization is the application's job."
+                },
+                "OidcAuthorizationEndpoint": {
+                    "type": "string",
+                    "default": "",
+                    "description": "Ignored when UseOidc is false."
+                },
+                "OidcClientId": {
+                    "type": "string",
+                    "default": "",
+                    "description": "Ignored when UseOidc is false."
+                },
+                "OidcIssuer": {
+                    "type": "string",
+                    "default": "",
+                    "description": "Ignored when UseOidc is false."
+                },
+                "OidcTokenEndpoint": {
+                    "type": "string",
+                    "default": "",
+                    "description": "Ignored when UseOidc is false."
+                },
+                "OidcUserInfoEndpoint": {
+                    "type": "string",
+                    "default": "",
+                    "description": "Ignored when UseOidc is false."
+                }
+            },
+            "allOf": [
+                {
+                    "$comment": "CFN Rule OidcParametersRequired",
+                    "then": {
+                        "required": [
+                            "OidcAuthorizationEndpoint",
+                            "OidcClientId",
+                            "OidcIssuer",
+                            "OidcTokenEndpoint",
+                            "OidcUserInfoEndpoint"
+                        ],
+                        "properties": {
+                            "OidcAuthorizationEndpoint": {
+                                "minLength": 1,
+                                "$comment": "OidcAuthorizationEndpoint is required when UseOidc is true"
+                            },
+                            "OidcClientId": {
+                                "minLength": 1,
+                                "$comment": "OidcClientId is required when UseOidc is true"
+                            },
+                            "OidcIssuer": {
+                                "minLength": 1,
+                                "$comment": "OidcIssuer is required when UseOidc is true"
+                            },
+                            "OidcTokenEndpoint": {
+                                "minLength": 1,
+                                "$comment": "OidcTokenEndpoint is required when UseOidc is true"
+                            },
+                            "OidcUserInfoEndpoint": {
+                                "minLength": 1,
+                                "$comment": "OidcUserInfoEndpoint is required when UseOidc is true"
+                            }
+                        }
+                    },
+                    "if": {
+                        "anyOf": [
+                            {
+                                "not": {
+                                    "required": [
+                                        "UseOidc"
+                                    ]
+                                }
+                            },
+                            {
+                                "required": [
+                                    "UseOidc"
+                                ],
+                                "properties": {
+                                    "UseOidc": {
+                                        "const": "true"
+                                    }
+                                }
+                            }
+                        ]
+                    }
+                }
+            ]
+        },
+        "Tags": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+                "Application",
+                "Resource",
+                "Cost Center"
+            ],
+            "properties": {
+                "Application": {
+                    "type": "string"
+                },
+                "Resource": {
+                    "type": "string"
+                },
+                "Cost Center": {
+                    "type": "string"
+                }
+            }
+        }
+    }
+}

@@ -32,7 +32,22 @@ blueprints/<name>/
 ├── <name>.md           # when to choose this, when NOT to, cost, cost when idle, dependencies
 └── v1/
     ├── template.yml    # the CloudFormation
-    └── config.json     # a CloudFormation TemplateConfiguration, all values placeholder
+    ├── config.json     # a CloudFormation TemplateConfiguration, all values placeholder
+    └── schema.json     # generated from template.yml -- do not hand-edit
+```
+
+`schema.json` is the only generated file. `scripts/generate_schemas.py` compiles `template.yml`'s
+parameters — and its `Rules:` block, if it grows one — into a draft-2020-12 JSON Schema, and CI runs
+`--check` so a template change with a stale schema fails the build.
+
+It is committed rather than derived on demand because JSON Schema is a format everything can already
+read. **Any** consumer that validates JSON Schema can check a filled-in config against a blueprint —
+`ajv`, `jsonschema`, a Go or Rust validator, a form generator — without loading a CloudFormation
+parser, a YAML tag-resolution table, or any of this repo's Python. The parse happens once, here, in the
+one place that owns the templates. Regenerate with:
+
+```bash
+python3 scripts/generate_schemas.py
 ```
 
 Two things about this shape were open questions in the platform's D-76 and are now settled. They are
@@ -185,13 +200,14 @@ fine — it is a pseudo-parameter, and it resolves at deploy time in whatever ac
 
 ## CI
 
-`.github/workflows/ci.yml` runs three steps on every push and pull request. All three run identically
+`.github/workflows/ci.yml` runs four steps on every push and pull request. All four run identically
 on a laptop — nothing about them needs GitHub, which is the point:
 
 ```bash
-cfn-lint blueprints/*/v*/template.yml       # every template, cfn-lint 1.56+
-python3 scripts/check_structure.py          # the shape this README documents
-python3 scripts/audit_secrets.py --history  # the audit above, tree + git log -p --all
+cfn-lint blueprints/*/v*/template.yml           # every template, cfn-lint 1.56+
+python3 scripts/check_structure.py              # the shape this README documents
+python3 scripts/generate_schemas.py --check     # every schema.json matches its template.yml
+python3 scripts/audit_secrets.py --history      # the audit above, tree + git log -p --all
 ```
 
 `check_structure.py` asserts what prose cannot enforce: every `blueprint.yml` parses and names its own
@@ -201,6 +217,10 @@ not list; `replaces_resources_on_update` and `replacement_triggers` agree with e
 `config.json` is valid JSON with exactly `Parameters` and `Tags` and **only string values**; every
 template carries its `Metadata.Blueprint` name and version; and no template uses
 `{{resolve:ssm-secure:}}`.
+
+`generate_schemas.py --check` also fails on an *orphan* schema — one left behind for a version the
+manifest no longer declares. A stale schema is worse than a missing one, because the agent would happily
+validate against a template that is gone.
 
 `audit_secrets.py` carries a small `ALLOWED` list — `0.0.0.0/0`, `${AWS::Partition}`, the twelve-digit
 character class in `apigw-lambda`'s `ImageUri` pattern. Each entry has its reason written next to it.

@@ -1,0 +1,120 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "$id": "postgres-aurora-serverless/v1/schema.json",
+    "title": "postgres-aurora-serverless v1 config",
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+        "Parameters",
+        "Tags"
+    ],
+    "properties": {
+        "Parameters": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+                "ClusterName"
+            ],
+            "properties": {
+                "Application": false,
+                "ClusterName": {
+                    "type": "string",
+                    "pattern": "^(?:[a-z][a-z0-9-]{1,40})$",
+                    "description": "Cluster name, unqualified \u2014 the stack prefixes it with the workspace. Renaming REPLACES the cluster: a new empty database, and the old one retained under the old name. Constraint: a lowercase letter followed by lowercase letters, digits or hyphens"
+                },
+                "DatabaseName": {
+                    "type": "string",
+                    "pattern": "^(?:[a-z][a-z0-9_]{0,62})$",
+                    "default": "appdb",
+                    "description": "Initial database created inside the cluster. Postgres identifier rules: no hyphens. Constraint: a lowercase letter followed by lowercase letters, digits or underscores"
+                },
+                "MasterUsername": {
+                    "type": "string",
+                    "pattern": "^(?:[a-z][a-z0-9_]{2,62})$",
+                    "default": "dbadmin",
+                    "description": "Master username. The password is GENERATED into Secrets Manager and never appears in this template, a parameter or a config file. \"postgres\" and \"admin\" are reserved by the engine. Constraint: a lowercase letter followed by lowercase letters, digits or underscores"
+                },
+                "MinCapacityAcu": {
+                    "type": "string",
+                    "pattern": "^-?(?:\\d+(?:\\.\\d+)?|\\.\\d+)(?:[eE][-+]?\\d+)?$",
+                    "default": "0.5",
+                    "description": "Minimum Aurora Capacity Units. 0 lets the cluster pause when idle \u2014 cheapest, but the first connection after a pause waits roughly 15 seconds, which fails a health check that does not expect it. 0.5 is the lowest always-warm setting. CFN Type: Number, written as a string in the config (>= 0, <= 128)."
+                },
+                "MaxCapacityAcu": {
+                    "type": "string",
+                    "pattern": "^-?(?:\\d+(?:\\.\\d+)?|\\.\\d+)(?:[eE][-+]?\\d+)?$",
+                    "default": "4",
+                    "description": "Maximum ACU. This is the cost ceiling and the only thing standing between a runaway query and a large bill. 1 ACU is about 2 GiB of memory with matching CPU. CFN Type: Number, written as a string in the config (>= 1, <= 128)."
+                },
+                "CreateReader": {
+                    "type": "string",
+                    "enum": [
+                        "true",
+                        "false"
+                    ],
+                    "default": "false",
+                    "description": "Add a reader instance in a second AZ. Doubles the cost. It is a read-scaling instance that also happens to shorten failover \u2014 Aurora survives an AZ loss without it, because storage is already replicated three ways."
+                },
+                "BackupRetentionDays": {
+                    "type": "string",
+                    "pattern": "^-?(?:\\d+(?:\\.\\d+)?|\\.\\d+)(?:[eE][-+]?\\d+)?$",
+                    "default": "7",
+                    "description": "Automated backup retention. Aurora keeps continuous backup for this window, so any second in it is restorable. Backup storage up to the cluster size is free. CFN Type: Number, written as a string in the config (>= 1, <= 35)."
+                },
+                "DeletionProtection": {
+                    "type": "string",
+                    "enum": [
+                        "true",
+                        "false"
+                    ],
+                    "default": "true",
+                    "description": "Blocks DeleteDBCluster at the API. Leave true for anything holding real data \u2014 it must be turned off in a separate stack update before a teardown can proceed, which is the point."
+                },
+                "EngineVersion": {
+                    "type": "string",
+                    "pattern": "^(?:[0-9]{2}\\.[0-9]{1,2})$",
+                    "default": "16.4",
+                    "description": "Aurora PostgreSQL version. A major-version change is an in-place upgrade with downtime, not a replacement \u2014 test it against a restored snapshot first. Constraint: a major.minor Aurora PostgreSQL version, for example 16.4"
+                },
+                "VpcId": {
+                    "type": "string",
+                    "pattern": "^/",
+                    "default": "/none/vpc-id",
+                    "description": "SSM path to the workspace VPC id."
+                },
+                "PrivateSubnetIds": {
+                    "type": "string",
+                    "pattern": "^/",
+                    "default": "/none/subnets-core-private",
+                    "description": "SSM path to the workspace private subnet list. Must span at least two availability zones \u2014 Aurora rejects a subnet group that does not, and the message names the subnet group rather than the cause."
+                },
+                "KmsKeyArn": {
+                    "type": "string",
+                    "pattern": "^/",
+                    "default": "/none/kms-key-arn",
+                    "description": "SSM path to the workspace CMK. Encrypts the cluster volume and the generated secret. Storage encryption cannot be turned on or off after creation."
+                }
+            }
+        },
+        "Tags": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+                "Application",
+                "Resource",
+                "Cost Center"
+            ],
+            "properties": {
+                "Application": {
+                    "type": "string"
+                },
+                "Resource": {
+                    "type": "string"
+                },
+                "Cost Center": {
+                    "type": "string"
+                }
+            }
+        }
+    }
+}

@@ -1,0 +1,66 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "$id": "route53-delegated-zone/v1/schema.json",
+    "title": "route53-delegated-zone v1 config",
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+        "Parameters",
+        "Tags"
+    ],
+    "properties": {
+        "Parameters": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+                "Subdomain"
+            ],
+            "properties": {
+                "Application": false,
+                "Subdomain": {
+                    "type": "string",
+                    "pattern": "^(?:[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)$",
+                    "description": "The single label to delegate, without a dot. \"team\" against a parent of example.org creates team.example.org. One label only: a multi-label value needs a delegation at each level the parent does not already own, which this blueprint does not create. Constraint: one DNS label \u2014 lowercase letters, digits and hyphens, not starting or ending with a hyphen"
+                },
+                "ParentHostedZoneId": {
+                    "type": "string",
+                    "pattern": "^/",
+                    "default": "/none/hosted-zone-id",
+                    "description": "SSM path holding the parent zone id. Defaults to the shared zone published by shared-infra. The stack must run in the account that owns that zone \u2014 a cross-account delegation needs a role this blueprint does not assume."
+                },
+                "ParentDomainName": {
+                    "type": "string",
+                    "pattern": "^/",
+                    "default": "/none/hosted-zone-domain",
+                    "description": "SSM path holding the parent zone's domain name, used to build the delegated name. Must be the domain of ParentHostedZoneId; if the two disagree the NS record is created in the wrong zone and resolution fails with no stack error."
+                },
+                "DelegationTtlSeconds": {
+                    "type": "string",
+                    "pattern": "^-?(?:\\d+(?:\\.\\d+)?|\\.\\d+)(?:[eE][-+]?\\d+)?$",
+                    "default": "300",
+                    "description": "TTL on the NS record in the parent zone. Keep it low until the delegation is confirmed working \u2014 a wrong NS set cached for a day is a day of downtime. Raise it afterwards. CFN Type: Number, written as a string in the config (>= 60, <= 172800)."
+                }
+            }
+        },
+        "Tags": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+                "Application",
+                "Resource",
+                "Cost Center"
+            ],
+            "properties": {
+                "Application": {
+                    "type": "string"
+                },
+                "Resource": {
+                    "type": "string"
+                },
+                "Cost Center": {
+                    "type": "string"
+                }
+            }
+        }
+    }
+}
