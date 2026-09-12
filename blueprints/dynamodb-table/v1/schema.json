@@ -1,0 +1,204 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "$id": "dynamodb-table/v1/schema.json",
+    "title": "dynamodb-table v1 config",
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+        "Parameters",
+        "Tags"
+    ],
+    "properties": {
+        "Parameters": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+                "PartitionKeyName",
+                "TableName"
+            ],
+            "properties": {
+                "Application": false,
+                "TableName": {
+                    "type": "string",
+                    "pattern": "^(?:[a-z0-9][a-z0-9-]{1,48})$",
+                    "description": "Table name, unqualified. The stack prefixes it with the workspace, so \"sessions\" becomes \"<workspace>-sessions\". Renaming this REPLACES the table and loses every item. Constraint: lowercase letters, digits and hyphens; 2 to 49 characters"
+                },
+                "PartitionKeyName": {
+                    "type": "string",
+                    "pattern": "^(?:[A-Za-z][A-Za-z0-9_]{0,254})$",
+                    "description": "Partition key attribute name. Part of the key schema, which is immutable: changing it replaces the table. Constraint: a letter followed by letters, digits or underscores"
+                },
+                "PartitionKeyType": {
+                    "type": "string",
+                    "enum": [
+                        "S",
+                        "N",
+                        "B"
+                    ],
+                    "default": "S",
+                    "description": "S string, N number, B binary."
+                },
+                "SortKeyName": {
+                    "type": "string",
+                    "default": "",
+                    "description": "Sort key attribute name, or empty for a table keyed on the partition key alone. Adding one later replaces the table, so decide now: if items will ever need ordering or a range query within a partition, set it."
+                },
+                "SortKeyType": {
+                    "type": "string",
+                    "enum": [
+                        "S",
+                        "N",
+                        "B"
+                    ],
+                    "default": "S",
+                    "description": "Ignored when SortKeyName is empty."
+                },
+                "BillingMode": {
+                    "type": "string",
+                    "enum": [
+                        "PAY_PER_REQUEST",
+                        "PROVISIONED"
+                    ],
+                    "default": "PAY_PER_REQUEST",
+                    "description": "PAY_PER_REQUEST costs nothing when idle and is the right default. PROVISIONED is cheaper only above roughly 20 percent sustained utilisation."
+                },
+                "ReadCapacityUnits": {
+                    "type": "string",
+                    "pattern": "^-?(?:\\d+(?:\\.\\d+)?|\\.\\d+)(?:[eE][-+]?\\d+)?$",
+                    "default": "5",
+                    "description": "Ignored unless BillingMode is PROVISIONED. CFN Type: Number, written as a string in the config (>= 1)."
+                },
+                "WriteCapacityUnits": {
+                    "type": "string",
+                    "pattern": "^-?(?:\\d+(?:\\.\\d+)?|\\.\\d+)(?:[eE][-+]?\\d+)?$",
+                    "default": "5",
+                    "description": "Ignored unless BillingMode is PROVISIONED. CFN Type: Number, written as a string in the config (>= 1)."
+                },
+                "EnablePointInTimeRecovery": {
+                    "type": "string",
+                    "enum": [
+                        "true",
+                        "false"
+                    ],
+                    "default": "true",
+                    "description": "Continuous backup with 35-day restore-to-second. Costs roughly the table's storage price again. Turn it off only for a table you would be willing to lose entirely."
+                },
+                "TimeToLiveAttributeName": {
+                    "type": "string",
+                    "default": "",
+                    "description": "Attribute holding a Unix-epoch expiry, or empty for no TTL. Deletion is free but not prompt \u2014 typically within 48 hours, so this is a cost control, not a correctness one. Never rely on it to enforce a retention deadline."
+                },
+                "IndexPartitionKeyName": {
+                    "type": "string",
+                    "default": "",
+                    "description": "Partition key for one global secondary index, or empty for no index. The index projects ALL attributes, which doubles storage for the indexed items."
+                },
+                "IndexSortKeyName": {
+                    "type": "string",
+                    "default": "",
+                    "description": "Sort key for the index. Requires IndexPartitionKeyName."
+                },
+                "KmsKeyArn": {
+                    "type": "string",
+                    "pattern": "^/",
+                    "default": "/none/kms-key-arn",
+                    "description": "SSM path to the workspace CMK. A customer-managed key rather than the AWS-owned default, so key access is auditable and revocable per workspace."
+                }
+            },
+            "allOf": [
+                {
+                    "$comment": "CFN Rule SortKeyTypeRequiresSortKey",
+                    "then": {
+                        "required": [],
+                        "properties": {
+                            "SortKeyType": {
+                                "minLength": 1,
+                                "$comment": "SortKeyType is required when SortKeyName is set"
+                            }
+                        }
+                    },
+                    "if": {
+                        "not": {
+                            "anyOf": [
+                                {
+                                    "not": {
+                                        "required": [
+                                            "SortKeyName"
+                                        ]
+                                    }
+                                },
+                                {
+                                    "required": [
+                                        "SortKeyName"
+                                    ],
+                                    "properties": {
+                                        "SortKeyName": {
+                                            "const": ""
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                },
+                {
+                    "$comment": "CFN Rule IndexSortKeyRequiresIndexPartitionKey",
+                    "then": {
+                        "required": [
+                            "IndexPartitionKeyName"
+                        ],
+                        "properties": {
+                            "IndexPartitionKeyName": {
+                                "minLength": 1,
+                                "$comment": "IndexPartitionKeyName is required when IndexSortKeyName is set \u2014 a GSI cannot have a sort key alone"
+                            }
+                        }
+                    },
+                    "if": {
+                        "not": {
+                            "anyOf": [
+                                {
+                                    "not": {
+                                        "required": [
+                                            "IndexSortKeyName"
+                                        ]
+                                    }
+                                },
+                                {
+                                    "required": [
+                                        "IndexSortKeyName"
+                                    ],
+                                    "properties": {
+                                        "IndexSortKeyName": {
+                                            "const": ""
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                }
+            ]
+        },
+        "Tags": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+                "Application",
+                "Resource",
+                "Cost Center"
+            ],
+            "properties": {
+                "Application": {
+                    "type": "string"
+                },
+                "Resource": {
+                    "type": "string"
+                },
+                "Cost Center": {
+                    "type": "string"
+                }
+            }
+        }
+    }
+}

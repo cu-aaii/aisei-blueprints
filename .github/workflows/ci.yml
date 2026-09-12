@@ -28,5 +28,11 @@ jobs:
       - name: Blueprint structure
         run: python3 scripts/check_structure.py
 
+      # The committed schema.json files are generated from template.yml. They are what the Builder
+      # Agent validates a config against -- it is TypeScript and does not parse CloudFormation -- so a
+      # template change with a stale schema means the agent validates against the old parameter set.
+      - name: Blueprint schemas
+        run: python3 scripts/generate_schemas.py --check
+
       - name: Secrets audit, working tree and history
         run: python3 scripts/audit_secrets.py --history

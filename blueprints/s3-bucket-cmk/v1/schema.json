@@ -1,0 +1,92 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "$id": "s3-bucket-cmk/v1/schema.json",
+    "title": "s3-bucket-cmk v1 config",
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+        "Parameters",
+        "Tags"
+    ],
+    "properties": {
+        "Parameters": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+                "BucketPurpose"
+            ],
+            "properties": {
+                "Application": false,
+                "BucketPurpose": {
+                    "type": "string",
+                    "pattern": "^(?:[a-z0-9][a-z0-9-]{1,20})$",
+                    "description": "What the bucket is for \u2014 uploads, exports, backups. Part of the name, which is <workspace>-<region>-<account>-<purpose>. Renaming REPLACES the bucket, and a replacement whose old copy is retained holds the name, so the update fails rather than silently forking your data. Constraint: lowercase letters, digits and hyphens, 2 to 21 characters"
+                },
+                "NoncurrentVersionExpirationDays": {
+                    "type": "string",
+                    "pattern": "^-?(?:\\d+(?:\\.\\d+)?|\\.\\d+)(?:[eE][-+]?\\d+)?$",
+                    "default": "90",
+                    "description": "When superseded versions are deleted. Versioning without this is an unbounded bill: every overwrite keeps the old bytes forever, and nobody notices until the storage line moves. CFN Type: Number, written as a string in the config (>= 1, <= 3650)."
+                },
+                "CurrentVersionExpirationDays": {
+                    "type": "string",
+                    "pattern": "^-?(?:\\d+(?:\\.\\d+)?|\\.\\d+)(?:[eE][-+]?\\d+)?$",
+                    "default": "0",
+                    "description": "When live objects are deleted, or 0 to keep them indefinitely. Retention of the data itself is a per-bucket decision, so the default keeps everything. CFN Type: Number, written as a string in the config (>= 0, <= 3650)."
+                },
+                "TransitionToInfrequentAccessDays": {
+                    "type": "string",
+                    "pattern": "^-?(?:\\d+(?:\\.\\d+)?|\\.\\d+)(?:[eE][-+]?\\d+)?$",
+                    "default": "0",
+                    "description": "Age at which objects move to Standard-IA, roughly halving storage cost, or 0 for no transition. Below 128 KB an object costs MORE in IA than Standard because of the 128 KB minimum billable size \u2014 so this is for large objects, not for many small ones. CFN Type: Number, written as a string in the config (>= 0, <= 3650)."
+                },
+                "AbortIncompleteUploadDays": {
+                    "type": "string",
+                    "pattern": "^-?(?:\\d+(?:\\.\\d+)?|\\.\\d+)(?:[eE][-+]?\\d+)?$",
+                    "default": "7",
+                    "description": "Age at which abandoned multipart uploads are cleaned up. Their parts are invisible in the console object list and billed as storage indefinitely \u2014 this is the single most common source of S3 spend nobody can account for. CFN Type: Number, written as a string in the config (>= 1, <= 365)."
+                },
+                "EnableAccessLogging": {
+                    "type": "string",
+                    "enum": [
+                        "true",
+                        "false"
+                    ],
+                    "default": "false",
+                    "description": "Create a second bucket and log every request to it. Worth it for anything holding sensitive data; it roughly doubles the fixed cost and the log bucket needs its own lifecycle, which it gets."
+                },
+                "AllowedPrincipalArn": {
+                    "type": "string",
+                    "default": "",
+                    "description": "Optional single IAM role ARN \u2014 a task role or a function role \u2014 granted read and write on this bucket by the bucket policy, in addition to whatever its own IAM policy allows. Empty means the bucket policy grants nothing and access is entirely by IAM policy, which is the usual case."
+                },
+                "KmsKeyArn": {
+                    "type": "string",
+                    "pattern": "^/",
+                    "default": "/none/kms-key-arn",
+                    "description": "SSM path to the workspace CMK. A reader needs kms:Decrypt on this key as well as s3:GetObject \u2014 an IAM policy granting only the S3 action fails with AccessDenied naming S3, not KMS."
+                }
+            }
+        },
+        "Tags": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+                "Application",
+                "Resource",
+                "Cost Center"
+            ],
+            "properties": {
+                "Application": {
+                    "type": "string"
+                },
+                "Resource": {
+                    "type": "string"
+                },
+                "Cost Center": {
+                    "type": "string"
+                }
+            }
+        }
+    }
+}
